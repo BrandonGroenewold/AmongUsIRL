@@ -3,7 +3,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { PLAYER_COLORS } from '../constants/Colors';
-import { saveSession } from '../lib/session';
+import { getDeviceId, saveSession } from '../lib/session';
 import { supabase } from '../lib/supabase';
 
 function getAvailableColor(preferred: string, taken: string[]): string {
@@ -52,6 +52,8 @@ export default function CreateGameScreen() {
     const takenColors = existingPlayers?.map((p) => p.color) ?? [];
     const assignedColor = getAvailableColor(color, takenColors);
 
+    const deviceId = await getDeviceId();
+
     const { data: player, error: playerError } = await supabase
       .from('players')
       .insert({
@@ -59,6 +61,7 @@ export default function CreateGameScreen() {
         display_name: name,
         color: assignedColor,
         is_host: true,
+        device_id: deviceId,
       })
       .select()
       .single();

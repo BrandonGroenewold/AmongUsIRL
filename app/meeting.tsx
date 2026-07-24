@@ -1,7 +1,8 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useHeartbeat } from '../hooks/useHeartbeat';
+import { useHostFailover } from '../hooks/useHostFailover';
 import { supabase } from '../lib/supabase';
 
 type Player = {
@@ -10,6 +11,9 @@ type Player = {
   color: string;
   role: string;
   is_alive: boolean;
+  is_host: boolean;
+  last_seen: string;
+  created_at: string;
 };
 
 type Meeting = {
@@ -44,6 +48,11 @@ type Vote = {
   target_id: string | null;
 };
 
+const DISCONNECTED_THRESHOLD_MS = 30000;
+function isDisconnected(lastSeen: string): boolean {
+  return Date.now() - new Date(lastSeen).getTime() > DISCONNECTED_THRESHOLD_MS;
+}
+
 function getColorHex(colorName: string): string {
   const map: Record<string, string> = {
     Red: '#e74c3c', Blue: '#3498db', Green: '#2ecc71',
@@ -67,41 +76,59 @@ export default function MeetingScreen() {
   const hasStartedDiscussionTimer = useRef(false);
   const hasResolvedVote = useRef(false);
 
-  useHeartbeat(playerId);
+useHeartbeat(playerId);
+  useHostFailover(roomId, players, playerId, 30000); // 30s — meetings are time-boxed, keep handoff snappy
 
-  const currentPlayer = players.find((p) => p.id === playerId);
+const currentPlayer = players.find((p) => p.id === playerId);
   const isAlive = currentPlayer?.is_alive ?? false;
-  const isHost = room?.host_id === playerId;
+  // Derived from the players table (already kept in sync via realtime), not room.host_id —
+  // this screen doesn't subscribe to the rooms table, so room.host_id would go stale after
+  // a mid-meeting host promotion
+  const isHost = currentPlayer?.is_host ?? false;
 
-  useEffect(() => {
-    fetchData();
+useFocusEffect(
+    useCallback(() => {
+      // Reset leftover state from a previous visit — critical for the ref flags, since a
+      // second meeting reusing this same screen instance would otherwise inherit "already
+      // resolved/already moved to voting" flags from the FIRST meeting and silently refuse
+      // to progress the second one
+      setHasVoted(false);
+      setSelectedTarget(undefined);
+      setSecondsLeft(0);
+      setLoading(true);
+      hasMovedToVoting.current = false;
+      hasStartedDiscussionTimer.current = false;
+      hasResolvedVote.current = false;
 
-    const channel = supabase
-      .channel(`meeting:${roomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'meetings', filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          if (payload.new) {
-            const updatedMeeting = payload.new as Meeting;
-            setMeeting(updatedMeeting);
-            if (updatedMeeting.resolved_at) {
-              router.replace(`/results?roomId=${roomId}&playerId=${playerId}&meetingId=${updatedMeeting.id}`);
+      fetchData();
+
+      const channel = supabase
+        .channel(`meeting:${roomId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'meetings', filter: `room_id=eq.${roomId}` },
+          (payload) => {
+            if (payload.new) {
+              const updatedMeeting = payload.new as Meeting;
+              setMeeting(updatedMeeting);
+              if (updatedMeeting.resolved_at) {
+                router.replace(`/results?roomId=${roomId}&playerId=${playerId}&meetingId=${updatedMeeting.id}`);
+              }
             }
           }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
-        () => fetchPlayers()
-      )
-      .subscribe();
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
+          () => fetchPlayers()
+        )
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }, [roomId, playerId])
+  );
 
   useEffect(() => {
     if (!meeting) return;
@@ -166,13 +193,14 @@ export default function MeetingScreen() {
     return () => clearInterval(interval);
   }, [meeting, room, loading, isHost]);
 
-  // Host also checks if all living players have voted, to end voting early
+  // Host also checks if all active living players have voted, to end voting early.
+  // Disconnected players don't block early resolution.
   useEffect(() => {
     if (!isHost || !meeting || meeting.status !== 'voting' || hasResolvedVote.current) return;
 
-    const livingPlayers = players.filter((p) => p.is_alive);
+    const activeLivingPlayers = players.filter((p) => p.is_alive && !isDisconnected(p.last_seen));
     const votedPlayerIds = new Set(votes.map((v) => v.voter_id));
-    const allVoted = livingPlayers.length > 0 && livingPlayers.every((p) => votedPlayerIds.has(p.id));
+    const allVoted = activeLivingPlayers.length > 0 && activeLivingPlayers.every((p) => votedPlayerIds.has(p.id));
 
     if (allVoted) {
       hasResolvedVote.current = true;
@@ -299,11 +327,13 @@ const fetchPlayers = async () => {
 
     const ejectedPlayer = allPlayers.find((p) => p.id === ejectedId);
     let winner: string | null = null;
+    const livingPlayers = updatedPlayers.filter((p) => p.is_alive);
 
+    // Jester only wins by being voted out — surviving to the end (even as the last player)
+    // is not a win condition for them, they just resolve under normal crewmate/impostor math
     if (ejectedPlayer?.role === 'jester') {
       winner = 'jester';
     } else {
-      const livingPlayers = updatedPlayers.filter((p) => p.is_alive);
       const livingImpostors = livingPlayers.filter((p) => p.role === 'impostor');
       const livingNonImpostors = livingPlayers.filter((p) => p.role !== 'impostor');
 
@@ -323,12 +353,12 @@ const fetchPlayers = async () => {
       })
       .eq('id', meeting.id);
 
-    if (winner) {
-      await supabase
-        .from('rooms')
-        .update({ status: 'ended', winner })
-        .eq('id', roomId);
-    }
+    // Always resolve the room status one way or the other — leaving it stuck on 'meeting'
+    // would cause game.tsx's reconnect logic to bounce players back to gathering forever
+    await supabase
+      .from('rooms')
+      .update({ status: winner ? 'ended' : 'in_progress', winner: winner ?? null })
+      .eq('id', roomId);
   };
 
   const selectTarget = (targetId: string | null) => {

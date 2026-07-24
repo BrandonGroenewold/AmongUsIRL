@@ -1,7 +1,8 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useHeartbeat } from '../hooks/useHeartbeat';
+import { useHostFailover } from '../hooks/useHostFailover';
 import { supabase } from '../lib/supabase';
 
 type Task = {
@@ -20,6 +21,8 @@ type Player = {
   is_host: boolean;
   tasks: Task[];
   last_kill_at: string | null;
+  last_seen: string;
+  created_at: string;
 };
 
 type Room = {
@@ -51,6 +54,15 @@ function GlobalTaskBar({ players, visibility, isMeeting }: { players: Player[]; 
   );
 }
 
+function getColorHex(colorName: string): string {
+  const map: Record<string, string> = {
+    Red: '#e74c3c', Blue: '#3498db', Green: '#2ecc71',
+    Purple: '#9b59b6', Yellow: '#f1c40f', Orange: '#e67e22',
+    Pink: '#fd79a8', Cyan: '#00cec9', White: '#dfe6e9', Brown: '#a0522d',
+  };
+  return map[colorName] ?? '#888';
+}
+
 export default function GameScreen() {
   const { roomId, playerId } = useLocalSearchParams<{ roomId: string; playerId: string }>();
   const [player, setPlayer] = useState<Player | null>(null);
@@ -63,69 +75,126 @@ export default function GameScreen() {
   const [killerSelected, setKillerSelected] = useState(false);
   const [cooldownTick, setCooldownTick] = useState(0);
 
-  const playerRef = useRef<Player | null>(null);
+ const playerRef = useRef<Player | null>(null);
   useEffect(() => {
     playerRef.current = player;
   }, [player]);
 
-  useHeartbeat(playerId);
-
+  // Mirror these in refs too, since the room-status realtime handler below is set up once
+  // per focus (inside useFocusEffect) and would otherwise see stale values from whenever
+  // the subscription was created, not the latest state
+  const needsKillerSelectionRef = useRef(false);
   useEffect(() => {
-    // Reset any leftover UI state from a previous game
-    setConfirmingDeath(false);
-    setNeedsKillerSelection(false);
-    setKillerSelected(false);
-    setLoading(true);
+    needsKillerSelectionRef.current = needsKillerSelection;
+  }, [needsKillerSelection]);
 
-    fetchPlayer();
-    fetchRoomAndPlayers();
+  const killerSelectedRef = useRef(false);
+  useEffect(() => {
+    killerSelectedRef.current = killerSelected;
+  }, [killerSelected]);
 
-    const playerChannel = supabase
-      .channel(`player:${playerId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `id=eq.${playerId}` },
-        (payload) => {
-          if (payload.new) setPlayer(payload.new as Player);
-        }
-      )
-      .subscribe();
+  const finalReportTimerStarted = useRef(false);
+  const [finalReportSecondsLeft, setFinalReportSecondsLeft] = useState(15);
 
-    const roomChannel = supabase
-      .channel(`game-room:${roomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
-        () => fetchRoomAndPlayers()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
-        (payload) => {
-          if (payload.new) {
-            const updatedRoom = payload.new as Room;
-            setRoom(updatedRoom);
-            if (updatedRoom.status === 'meeting') {
-              router.replace(`/gathering?roomId=${roomId}&playerId=${playerId}`);
-            } else if (updatedRoom.status === 'ended') {
-              router.replace(`/end-game?roomId=${roomId}&playerId=${playerId}`);
+  useHeartbeat(playerId);
+  useHostFailover(roomId, allPlayers, playerId);
+
+  useFocusEffect(
+    useCallback(() => {
+      // Reset any leftover UI state from a previous visit to this screen
+      setConfirmingDeath(false);
+      setNeedsKillerSelection(false);
+      setKillerSelected(false);
+      setLoading(true);
+
+      fetchPlayer();
+      fetchRoomAndPlayers();
+
+      const playerChannel = supabase
+        .channel(`player:${playerId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'players', filter: `id=eq.${playerId}` },
+          (payload) => {
+            if (payload.new) setPlayer(payload.new as Player);
+          }
+        )
+        .subscribe();
+
+      const roomChannel = supabase
+        .channel(`game-room:${roomId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
+          () => fetchRoomAndPlayers()
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
+          (payload) => {
+            if (payload.new) {
+              const updatedRoom = payload.new as Room;
+              setRoom(updatedRoom);
+              if (updatedRoom.status === 'meeting') {
+                router.replace(`/gathering?roomId=${roomId}&playerId=${playerId}`);
+              } else if (updatedRoom.status === 'ended') {
+                // If I still need to report who killed me, stay put — the killer-selection
+                // screen's own countdown handles routing to end-game once I answer or time runs out
+                const iStillNeedToReport = needsKillerSelectionRef.current && !killerSelectedRef.current;
+                if (!iStillNeedToReport) {
+                  router.replace(`/end-game?roomId=${roomId}&playerId=${playerId}`);
+                }
+              }
             }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(playerChannel);
-      supabase.removeChannel(roomChannel);
-    };
-  }, [roomId, playerId]);
+      // Runs when the screen loses focus (navigates away) — tears down subscriptions
+      // so a stale, hidden instance doesn't keep listening in the background
+      return () => {
+        supabase.removeChannel(playerChannel);
+        supabase.removeChannel(roomChannel);
+      };
+    }, [roomId, playerId])
+  );
 
+  // Tick every second to keep the kill cooldown display updating
   // Tick every second to keep the kill cooldown display updating
   useEffect(() => {
     const interval = setInterval(() => setCooldownTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // If our own death is the one that just ended the game, give a bounded 15s window to
+  // report who killed us before routing to end-game — otherwise the redirect gating above
+  // would leave us stuck on the killer-selection screen waiting on nothing
+  useEffect(() => {
+    const shouldCountDown = room?.status === 'ended' && needsKillerSelection && !killerSelected;
+
+    if (!shouldCountDown) {
+      finalReportTimerStarted.current = false;
+      setFinalReportSecondsLeft(15);
+      return;
+    }
+
+    if (finalReportTimerStarted.current) return;
+    finalReportTimerStarted.current = true;
+
+    let remaining = 15;
+    setFinalReportSecondsLeft(remaining);
+
+    const interval = setInterval(() => {
+      remaining -= 1;
+      setFinalReportSecondsLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(interval);
+        router.replace(`/end-game?roomId=${roomId}&playerId=${playerId}`);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [room?.status, needsKillerSelection, killerSelected, roomId, playerId]);
 
   const fetchPlayer = async () => {
     const { data } = await supabase
@@ -155,14 +224,44 @@ export default function GameScreen() {
       .select('*')
       .eq('room_id', roomId);
 
-    if (roomData) setRoom(roomData);
-    if (playersData) {
+if (roomData) {
+      setRoom(roomData);
+      // Catch reconnecting after the room already moved on — don't wait for a future update
+      if (roomData.status === 'meeting') {
+        router.replace(`/gathering?roomId=${roomId}&playerId=${playerId}`);
+        return;
+      }
+      if (roomData.status === 'ended') {
+        // Same gating as the rooms-table handler above — don't yank someone off the
+        // killer-selection screen if they still need to report who killed them
+        const iStillNeedToReport = needsKillerSelectionRef.current && !killerSelectedRef.current;
+        if (!iStillNeedToReport) {
+          router.replace(`/end-game?roomId=${roomId}&playerId=${playerId}`);
+          return;
+        }
+      }
+    }
+if (playersData) {
       setAllPlayers(playersData);
       checkTaskWinCondition(roomData, playersData);
+      checkEliminationWinCondition(playersData);
     }
   };
-
   const checkIfKillerAlreadySelected = async () => {
+    // If this player was voted out, there's no killer to select — skip straight to spectating
+    const { data: ejectionMeeting } = await supabase
+      .from('meetings')
+      .select('id')
+      .eq('room_id', roomId)
+      .eq('ejected_player_id', playerId)
+      .maybeSingle();
+
+    if (ejectionMeeting) {
+      setKillerSelected(true);
+      setNeedsKillerSelection(false);
+      return;
+    }
+
     const { data } = await supabase
       .from('kills')
       .select('id')
@@ -188,11 +287,36 @@ export default function GameScreen() {
     );
     if (livingCrew.length === 0) return;
 
-    const allDone = livingCrew.every((p) => p.tasks.every((t) => t.done));
+const allDone = livingCrew.every((p) => p.tasks.every((t) => t.done));
     if (allDone) {
       await supabase
         .from('rooms')
         .update({ status: 'ended', winner: 'crewmate' })
+        .eq('id', roomId);
+    }
+  };
+
+  // Same elimination-ratio logic meeting.tsx uses after a vote — but this fires after a KILL,
+  // since a kill can also flip the win condition and nothing was previously checking for that here
+  const checkEliminationWinCondition = async (playersList: Player[]) => {
+    const currentPlayer = playerRef.current;
+    if (!currentPlayer?.is_host) return;
+
+    const livingPlayers = playersList.filter((p) => p.is_alive);
+    const livingImpostors = livingPlayers.filter((p) => p.role === 'impostor');
+    const livingNonImpostors = livingPlayers.filter((p) => p.role !== 'impostor');
+
+    let winner: string | null = null;
+    if (livingImpostors.length === 0) {
+      winner = 'crewmate';
+    } else if (livingImpostors.length >= livingNonImpostors.length) {
+      winner = 'impostor';
+    }
+
+    if (winner) {
+      await supabase
+        .from('rooms')
+        .update({ status: 'ended', winner })
         .eq('id', roomId);
     }
   };
@@ -271,10 +395,17 @@ export default function GameScreen() {
       room_id: roomId,
       killer_id: killerId,
       victim_id: playerId,
+      reported_by: playerId,
     });
 
     setNeedsKillerSelection(false);
     setKillerSelected(true);
+
+    // If the game already ended on this kill, we were only still here to report —
+    // head to end-game now instead of waiting on the countdown to run out
+    if (room?.status === 'ended') {
+      router.replace(`/end-game?roomId=${roomId}&playerId=${playerId}`);
+    }
   };
 
   if (loading || !player) {
@@ -288,11 +419,18 @@ export default function GameScreen() {
   // Dead player view: killer selection first (if not done yet), then spectate screen
   if (!player.is_alive) {
     if (needsKillerSelection && !killerSelected) {
+      const isFinalReport = room?.status === 'ended';
       const livingOthers = allPlayers.filter((p) => p.is_alive && p.id !== playerId && p.role === 'impostor');
       return (
         <ScrollView contentContainerStyle={styles.container}>
           <Text style={styles.title}>Who killed you?</Text>
-          <Text style={styles.progress}>This is private — only used for the end-game summary.</Text>
+          {isFinalReport ? (
+            <Text style={styles.progress}>
+              The game just ended — you have {finalReportSecondsLeft}s to report before moving on.
+            </Text>
+          ) : (
+            <Text style={styles.progress}>This is private — only used for the end-game summary.</Text>
+          )}
           <View style={styles.taskList}>
             {livingOthers.map((p) => (
               <TouchableOpacity key={p.id} style={styles.taskRow} onPress={() => selectKiller(p.id)}>
@@ -304,9 +442,13 @@ export default function GameScreen() {
       );
     }
 
-    return (
+return (
       <View style={styles.centered}>
-        <Text style={styles.deadTitle}>You're Dead</Text>
+          <View style={styles.nameBadgeRow}>
+          <View style={[styles.nameBadgeDot, { backgroundColor: getColorHex(player.color) }]} />
+          <Text style={styles.nameBadge}>Playing as: {player.display_name}</Text>
+          </View>
+          <Text style={styles.deadTitle}>You're Dead</Text>
         <Text style={styles.deadSubtitle}>Spectating — you can no longer complete tasks or trigger meetings.</Text>
       </View>
     );
@@ -319,11 +461,15 @@ export default function GameScreen() {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <GlobalTaskBar
+    <GlobalTaskBar
         players={allPlayers}
         visibility={room?.settings.task_visibility}
         isMeeting={false}
       />
+   <View style={styles.nameBadgeRow}>
+        <View style={[styles.nameBadgeDot, { backgroundColor: getColorHex(player.color) }]} />
+        <Text style={styles.nameBadge}>Playing as: {player.display_name}</Text>
+      </View>
       <Text style={styles.title}>
         {isImpostorOrJester ? 'Fake Tasks' : 'Your Tasks'}
       </Text>
@@ -407,6 +553,21 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#ffffff',
     marginBottom: 4,
+  },
+  nameBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  nameBadgeDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 6,
+  },
+  nameBadge: {
+    color: '#888',
+    fontSize: 12,
   },
   progress: {
     color: '#aaaaaa',

@@ -1,7 +1,8 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useHeartbeat } from '../hooks/useHeartbeat';
+import { useHostFailover } from '../hooks/useHostFailover';
 import { supabase } from '../lib/supabase';
 
 type Player = {
@@ -10,6 +11,9 @@ type Player = {
   color: string;
   is_alive: boolean;
   ready_for_meeting: boolean;
+  is_host: boolean;
+  last_seen: string;
+  created_at: string;
 };
 
 type Room = {
@@ -21,6 +25,11 @@ type Room = {
   };
 };
 
+const DISCONNECTED_THRESHOLD_MS = 30000;
+function isDisconnected(lastSeen: string): boolean {
+  return Date.now() - new Date(lastSeen).getTime() > DISCONNECTED_THRESHOLD_MS;
+}
+
 export default function GatheringScreen() {
   const { roomId, playerId } = useLocalSearchParams<{ roomId: string; playerId: string }>();
   const [room, setRoom] = useState<Room | null>(null);
@@ -31,44 +40,56 @@ export default function GatheringScreen() {
   const [hasTriggered, setHasTriggered] = useState(false);
 
   useHeartbeat(playerId);
+  useHostFailover(roomId, players, playerId, 30000); // 30s — no task delay excuse during gathering, keep handoff snappy
 
-  const isHost = room?.host_id === playerId;
+  // Derived from the players table (already kept in sync via realtime), not room.host_id —
+  // this screen doesn't subscribe to the rooms table, so room.host_id would go stale after
+  // a mid-meeting host promotion
+  const currentPlayer = players.find((p) => p.id === playerId);
+  const isHost = currentPlayer?.is_host ?? false;
 
-  useEffect(() => {
-    initialLoad();
+useFocusEffect(
+    useCallback(() => {
+      // Reset any leftover UI state from a previous visit to this screen
+      setIsReady(false);
+      setHasTriggered(false);
+      setLoading(true);
 
-    const playersChannel = supabase
-      .channel(`gathering-players:${roomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
-        () => fetchPlayers()
-      )
-      .subscribe();
+      initialLoad();
 
-    const meetingChannel = supabase
-      .channel(`gathering-meeting:${roomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'meetings', filter: `room_id=eq.${roomId}` },
-        (payload) => {
-          if (payload.new && (payload.new as any).status === 'discussion') {
-            router.replace(`/meeting?roomId=${roomId}&playerId=${playerId}`);
+      const playersChannel = supabase
+        .channel(`gathering-players:${roomId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
+          () => fetchPlayers()
+        )
+        .subscribe();
+
+      const meetingChannel = supabase
+        .channel(`gathering-meeting:${roomId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'meetings', filter: `room_id=eq.${roomId}` },
+          (payload) => {
+            if (payload.new && (payload.new as any).status === 'discussion') {
+              router.replace(`/meeting?roomId=${roomId}&playerId=${playerId}`);
+            }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(playersChannel);
-      supabase.removeChannel(meetingChannel);
-    };
-  }, []);
+      return () => {
+        supabase.removeChannel(playersChannel);
+        supabase.removeChannel(meetingChannel);
+      };
+    }, [roomId, playerId])
+  );
 
   useEffect(() => {
     if (loading) return;
     const timer = setInterval(() => {
-      setSecondsLeft((prev) => prev - 1);
+      setSecondsLeft((prev) => Math.max(0, prev - 1));
     }, 1000);
     return () => clearInterval(timer);
   }, [loading]);
@@ -82,18 +103,19 @@ export default function GatheringScreen() {
     }
   }, [secondsLeft, isHost, hasTriggered]);
 
-  // Only the host checks the all-ready condition
+  // Only the host checks the all-ready condition. Disconnected players don't block
+  // early completion — only active living players need to be ready.
   useEffect(() => {
     if (!isHost || hasTriggered || loading) return;
-    const livingPlayers = players.filter((p) => p.is_alive);
-    const allReady = livingPlayers.length > 0 && livingPlayers.every((p) => p.ready_for_meeting);
+    const activeLivingPlayers = players.filter((p) => p.is_alive && !isDisconnected(p.last_seen));
+    const allReady = activeLivingPlayers.length > 0 && activeLivingPlayers.every((p) => p.ready_for_meeting);
     if (allReady) {
       setHasTriggered(true);
       startDiscussion();
     }
   }, [players, isHost, hasTriggered, loading]);
 
-  // Runs ONCE on mount: fetches room settings (sets the countdown starting point) and players
+// Runs ONCE on mount: fetches room settings (sets the countdown starting point) and players
   const initialLoad = async () => {
     const { data: roomData } = await supabase
       .from('rooms')
@@ -104,6 +126,23 @@ export default function GatheringScreen() {
     if (roomData) {
       setRoom(roomData);
       setSecondsLeft(roomData.settings.gathering_time ?? 45);
+    }
+
+    // Catch reconnecting after discussion has actually started. Meetings are created with
+    // status 'discussion' from the moment they're triggered, so status alone can't tell us
+    // whether gathering already finished — discussion_started_at is the real signal, since
+    // it's only set once the timer genuinely begins.
+    const { data: latestMeeting } = await supabase
+      .from('meetings')
+      .select('status, discussion_started_at')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (latestMeeting && latestMeeting.discussion_started_at) {
+      router.replace(`/meeting?roomId=${roomId}&playerId=${playerId}`);
+      return;
     }
 
     await fetchPlayers();
@@ -151,8 +190,8 @@ export default function GatheringScreen() {
     );
   }
 
-  const livingPlayers = players.filter((p) => p.is_alive);
-  const readyCount = livingPlayers.filter((p) => p.ready_for_meeting).length;
+  const activeLivingPlayers = players.filter((p) => p.is_alive && !isDisconnected(p.last_seen));
+  const readyCount = activeLivingPlayers.filter((p) => p.ready_for_meeting).length;
 
   return (
     <View style={styles.container}>
@@ -162,7 +201,7 @@ export default function GatheringScreen() {
       <Text style={styles.countdown}>{secondsLeft}</Text>
       <Text style={styles.countdownLabel}>seconds remaining</Text>
 
-      <Text style={styles.readyCount}>{readyCount}/{livingPlayers.length} players ready</Text>
+      <Text style={styles.readyCount}>{readyCount}/{activeLivingPlayers.length} players ready</Text>
 
       <TouchableOpacity
         style={[styles.readyButton, isReady && styles.readyButtonActive]}

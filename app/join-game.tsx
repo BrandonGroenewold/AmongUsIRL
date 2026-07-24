@@ -3,7 +3,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { PLAYER_COLORS } from '../constants/Colors';
-import { saveSession } from '../lib/session';
+import { getDeviceId, getSession, saveSession } from '../lib/session';
 import { supabase } from '../lib/supabase';
 
 function getAvailableColor(preferred: string, taken: string[]): string {
@@ -17,10 +17,19 @@ export default function JoinGameScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleJoin = async () => {
+    const handleJoin = async () => {
     if (code.length !== 6) return;
     setLoading(true);
     setError('');
+
+    // If this device already has a player row in the exact room being joined, reuse it
+    // instead of creating a duplicate — prevents ghost/disconnected duplicate rows when
+    // someone re-joins a room they never actually left
+    const existingSession = await getSession();
+    if (existingSession && existingSession.roomCode === code) {
+      router.replace(`/lobby?roomId=${existingSession.roomId}&playerId=${existingSession.playerId}`);
+      return;
+    }
 
     const name = await AsyncStorage.getItem('player_name');
     const color = await AsyncStorage.getItem('player_color');
@@ -43,6 +52,14 @@ export default function JoinGameScreen() {
       return;
     }
 
+    const deviceId = await getDeviceId();
+    const bannedIds: string[] = room.banned_device_ids ?? [];
+    if (bannedIds.includes(deviceId)) {
+      setError('You have been banned from this room.');
+      setLoading(false);
+      return;
+    }
+
     const { data: existingPlayers } = await supabase
       .from('players')
       .select('color')
@@ -51,13 +68,14 @@ export default function JoinGameScreen() {
     const takenColors = existingPlayers?.map((p) => p.color) ?? [];
     const assignedColor = getAvailableColor(color, takenColors);
 
-    const { data: player, error: playerError } = await supabase
+const { data: player, error: playerError } = await supabase
       .from('players')
       .insert({
         room_id: room.id,
         display_name: name,
         color: assignedColor,
         is_host: false,
+        device_id: deviceId,
       })
       .select()
       .single();

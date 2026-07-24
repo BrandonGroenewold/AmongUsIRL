@@ -1,6 +1,6 @@
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import SettingsModal from '../components/SettingsModal';
 import { useHeartbeat } from '../hooks/useHeartbeat';
 import { useHostFailover } from '../hooks/useHostFailover';
@@ -20,6 +20,7 @@ type Player = {
   is_host: boolean;
   last_seen: string;
   created_at: string;
+  device_id: string | null;
 };
 
 type Room = {
@@ -27,6 +28,7 @@ type Room = {
   code: string;
   host_id: string;
   status: string;
+  banned_device_ids?: string[];
   settings: {
     impostor_count?: number;
     task_count?: number;
@@ -51,41 +53,47 @@ export default function LobbyScreen() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showManagePlayers, setShowManagePlayers] = useState(false);
 
   useHeartbeat(playerId);
   useHostFailover(roomId, players, playerId, 20000); // 20s — lobby has no legitimate reason for a long gap
 
   const isHost = room?.host_id === playerId;
 
-  useEffect(() => {
-    fetchData();
+useFocusEffect(
+    useCallback(() => {
+      // Fresh fetch + fresh subscription every time this screen gains focus, including
+      // the second visit after Play Again — matches the pattern used in meeting.tsx/game.tsx
+      setLoading(true);
+      fetchData();
 
-    const channel = supabase
-      .channel(`room:${roomId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
-        () => fetchData()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
-        (payload) => {
-          if (payload.new) {
-            const updatedRoom = payload.new as Room;
-            setRoom(updatedRoom);
-            if (updatedRoom.status === 'in_progress') {
-              router.replace(`/role-reveal?roomId=${roomId}&playerId=${playerId}`);
+      const channel = supabase
+        .channel(`room:${roomId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
+          () => fetchData()
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
+          (payload) => {
+            if (payload.new) {
+              const updatedRoom = payload.new as Room;
+              setRoom(updatedRoom);
+              if (updatedRoom.status === 'in_progress') {
+                router.replace(`/role-reveal?roomId=${roomId}&playerId=${playerId}`);
+              }
             }
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }, [roomId, playerId])
+  );
 
   const fetchData = async () => {
     const { data: roomData } = await supabase
@@ -101,17 +109,63 @@ export default function LobbyScreen() {
       .order('created_at', { ascending: true });
 
     if (roomData) setRoom(roomData);
-    if (playersData) setPlayers(playersData);
+    if (playersData) {
+      setPlayers(playersData);
+
+      // If this device's own player row is gone, we were kicked or banned — leave immediately
+      // rather than sitting on a stale screen with a playerId that no longer exists
+      const stillInRoom = playersData.some((p) => p.id === playerId);
+      if (!stillInRoom) {
+        await clearSession();
+        router.replace('/');
+        return;
+      }
+    }
     setLoading(false);
   };
 
 const handleLeave = async () => {
-    await supabase
+    if (isHost) {
+      const nextHost = players
+        .filter((p) => p.id !== playerId && !isDisconnected(p.last_seen))
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0];
+
+      if (nextHost) {
+        await supabase.from('players').update({ is_host: true }).eq('id', nextHost.id);
+        await supabase.from('rooms').update({ host_id: nextHost.id }).eq('id', roomId);
+      }
+    }
+
+     const { error: deleteError } = await supabase
       .from('players')
       .delete()
       .eq('id', playerId);
+    if (deleteError) {
+      console.error('Failed to delete player row on leave:', deleteError);
+    }
     await clearSession();
     router.replace('/');
+  };
+
+const handlePromoteHost = async (newHostId: string) => {
+    await supabase.from('players').update({ is_host: false }).eq('id', playerId);
+    await supabase.from('players').update({ is_host: true }).eq('id', newHostId);
+    await supabase.from('rooms').update({ host_id: newHostId }).eq('id', roomId);
+  };
+
+  const handleKickPlayer = async (targetId: string) => {
+    await supabase.from('players').delete().eq('id', targetId);
+  };
+
+  const handleBanPlayer = async (targetId: string, targetDeviceId: string | null) => {
+    if (targetDeviceId) {
+      const currentBanned = room?.banned_device_ids ?? [];
+      await supabase
+        .from('rooms')
+        .update({ banned_device_ids: [...currentBanned, targetDeviceId] })
+        .eq('id', roomId);
+    }
+    await supabase.from('players').delete().eq('id', targetId);
   };
 
   const handleSaveSettings = async (newSettings: any) => {
@@ -219,6 +273,11 @@ const handleLeave = async () => {
               </Text>
               {disconnected && <Text style={styles.disconnectedBadge}>DISCONNECTED</Text>}
               {player.is_host && <Text style={styles.hostBadge}>HOST</Text>}
+              {isHost && !player.is_host && !disconnected && (
+                <TouchableOpacity onPress={() => handlePromoteHost(player.id)} style={styles.makeHostButton}>
+                  <Text style={styles.makeHostText}>Make Host</Text>
+                </TouchableOpacity>
+              )}
             </View>
           );
         })}
@@ -241,6 +300,12 @@ const handleLeave = async () => {
         <SettingRow label="Task visibility" value={room?.settings.task_visibility ?? 'Meetings'} isHost={isHost} />
       </View>
 
+      {isHost && (
+        <TouchableOpacity onPress={() => setShowManagePlayers(true)} style={styles.manageButton}>
+          <Text style={styles.manageButtonText}>Manage Players</Text>
+        </TouchableOpacity>
+      )}
+
       <TouchableOpacity onPress={handleLeave} style={styles.backButton}>
         <Text style={styles.backText}>Leave Lobby</Text>
       </TouchableOpacity>
@@ -255,12 +320,37 @@ const handleLeave = async () => {
         <Text style={styles.waitingText}>Waiting for host to start the game...</Text>
       )}
 
-      <SettingsModal
+<SettingsModal
         visible={showSettings}
         settings={room?.settings ?? {}}
         onClose={() => setShowSettings(false)}
         onSave={handleSaveSettings}
       />
+
+      <Modal visible={showManagePlayers} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Manage Players</Text>
+            <ScrollView style={styles.modalList}>
+              {players.filter((p) => p.id !== playerId).map((p) => (
+                <View key={p.id} style={styles.modalRow}>
+                  <View style={[styles.colorDot, { backgroundColor: getColorHex(p.color) }]} />
+                  <Text style={styles.modalPlayerName}>{p.display_name}</Text>
+                  <TouchableOpacity onPress={() => handleKickPlayer(p.id)} style={styles.kickButton}>
+                    <Text style={styles.kickButtonText}>Kick</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => handleBanPlayer(p.id, p.device_id)} style={styles.banButton}>
+                    <Text style={styles.banButtonText}>Ban</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity onPress={() => setShowManagePlayers(false)} style={styles.modalCloseButton}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -366,6 +456,19 @@ hostBadge: {
     fontWeight: 'bold',
     letterSpacing: 1,
   },
+  makeHostButton: {
+    marginLeft: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e74c3c',
+  },
+  makeHostText: {
+    color: '#e74c3c',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
   colorDotDisconnected: {
     opacity: 0.3,
   },
@@ -427,5 +530,89 @@ hostBadge: {
   backText: {
     color: '#aaaaaa',
     fontSize: 16,
+  },
+  manageButton: {
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#e74c3c',
+    borderRadius: 8,
+    paddingVertical: 12,
+  },
+  manageButtonText: {
+    color: '#e74c3c',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBox: {
+    backgroundColor: '#16213e',
+    borderRadius: 12,
+    padding: 20,
+    width: '85%',
+    maxHeight: '70%',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  modalTitle: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  modalList: {
+    marginBottom: 16,
+  },
+  modalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  modalPlayerName: {
+    color: '#ffffff',
+    fontSize: 15,
+    flex: 1,
+    marginLeft: 10,
+  },
+  kickButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e74c3c',
+    marginRight: 6,
+  },
+  kickButtonText: {
+    color: '#e74c3c',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  banButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#888',
+  },
+  banButtonText: {
+    color: '#888',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  modalCloseButton: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  modalCloseText: {
+    color: '#aaaaaa',
+    fontSize: 15,
   },
 });

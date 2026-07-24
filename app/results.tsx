@@ -98,8 +98,16 @@ export default function ResultsScreen() {
     setLoading(false);
   };
 
-  const proceedNext = () => {
-    if (room?.status === 'ended') {
+  const proceedNext = async () => {
+    // Re-check fresh instead of trusting the snapshot from mount — the win-condition write
+    // can land moments after this screen loads, so the initial fetch may already be stale.
+    const { data: latestRoom } = await supabase
+      .from('rooms')
+      .select('status')
+      .eq('id', roomId)
+      .single();
+
+    if (latestRoom?.status === 'ended') {
       router.replace(`/end-game?roomId=${roomId}&playerId=${playerId}`);
     } else {
       router.replace(`/game?roomId=${roomId}&playerId=${playerId}`);
