@@ -213,6 +213,7 @@ export default function EndGameScreen() {
         is_alive: true,
         ready_for_meeting: false,
         last_kill_at: null,
+        vitals_charge_seconds: 0,
       })
       .eq('room_id', roomId);
 

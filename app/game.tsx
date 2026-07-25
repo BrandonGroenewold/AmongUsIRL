@@ -1,6 +1,7 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import RoleRevealButton from '../components/RoleRevealButton';
 import { useHeartbeat } from '../hooks/useHeartbeat';
 import { useHostFailover } from '../hooks/useHostFailover';
 import { supabase } from '../lib/supabase';
@@ -23,6 +24,7 @@ type Player = {
   last_kill_at: string | null;
   last_seen: string;
   created_at: string;
+  vitals_charge_seconds?: number;
 };
 
 type Room = {
@@ -32,6 +34,8 @@ type Room = {
   settings: {
     task_visibility?: string;
     kill_cooldown?: number;
+    vitals_seconds_per_task?: number;
+    vitals_min_open_cost?: number;
   };
 };
 
@@ -74,6 +78,11 @@ export default function GameScreen() {
   const [needsKillerSelection, setNeedsKillerSelection] = useState(false);
   const [killerSelected, setKillerSelected] = useState(false);
   const [cooldownTick, setCooldownTick] = useState(0);
+  const [vitalsOpen, setVitalsOpen] = useState(false);
+  const [vitalsSecondsLeft, setVitalsSecondsLeft] = useState(0);
+  const [pendingTaskIndex, setPendingTaskIndex] = useState<number | null>(null);
+  const vitalsOpenedWithRef = useRef(0);
+  const vitalsRemainingRef = useRef(0);
 
  const playerRef = useRef<Player | null>(null);
   useEffect(() => {
@@ -105,6 +114,9 @@ export default function GameScreen() {
       setConfirmingDeath(false);
       setNeedsKillerSelection(false);
       setKillerSelected(false);
+      setVitalsOpen(false);
+      setVitalsSecondsLeft(0);
+      setPendingTaskIndex(null);
       setLoading(true);
 
       fetchPlayer();
@@ -165,6 +177,24 @@ export default function GameScreen() {
     const interval = setInterval(() => setCooldownTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Vitals countdown — only ticks while the modal is open, stops when closed or hits 0
+  useEffect(() => {
+    if (!vitalsOpen) return;
+
+    const interval = setInterval(() => {
+      vitalsRemainingRef.current -= 1;
+      setVitalsSecondsLeft(vitalsRemainingRef.current);
+
+      if (vitalsRemainingRef.current <= 0) {
+        clearInterval(interval);
+        setVitalsOpen(false);
+        supabase.from('players').update({ vitals_charge_seconds: 0 }).eq('id', playerId);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [vitalsOpen]);
 
   // If our own death is the one that just ended the game, give a bounded 15s window to
   // report who killed us before routing to end-game — otherwise the redirect gating above
@@ -321,14 +351,32 @@ const allDone = livingCrew.every((p) => p.tasks.every((t) => t.done));
     }
   };
 
-  const toggleTask = async (index: number) => {
+  const toggleTask = (index: number) => {
     if (!player) return;
+    if (player.tasks[index].done) return; // locked — can't uncheck
+    setPendingTaskIndex(index);
+  };
+
+  const confirmTask = async () => {
+    if (pendingTaskIndex === null || !player) return;
+    const index = pendingTaskIndex;
+    setPendingTaskIndex(null);
+
     const updatedTasks = [...player.tasks];
-    updatedTasks[index] = { ...updatedTasks[index], done: !updatedTasks[index].done };
+    updatedTasks[index] = { ...updatedTasks[index], done: true };
+
+    const updates: any = { tasks: updatedTasks };
+
+    // Scientist completing a real task earns vitals charge
+    if (player.role === 'scientist' && !player.tasks[index].fake) {
+      const secondsPerTask = room?.settings.vitals_seconds_per_task ?? 10;
+      const currentCharge = player.vitals_charge_seconds ?? 0;
+      updates.vitals_charge_seconds = currentCharge + secondsPerTask;
+    }
 
     await supabase
       .from('players')
-      .update({ tasks: updatedTasks })
+      .update(updates)
       .eq('id', playerId);
   };
 
@@ -363,6 +411,32 @@ const allDone = livingCrew.every((p) => p.tasks.every((t) => t.done));
     const elapsed = Date.now() - lastKill;
     const remaining = Math.ceil((cooldownMs - elapsed) / 1000);
     return remaining > 0 ? remaining : 0;
+  };
+
+  const openVitals = () => {
+    const currentCharge = player?.vitals_charge_seconds ?? 0;
+    if (currentCharge <= 0) return;
+    vitalsOpenedWithRef.current = currentCharge;
+    vitalsRemainingRef.current = currentCharge;
+    setVitalsSecondsLeft(currentCharge);
+    setVitalsOpen(true);
+  };
+
+  const closeVitals = async () => {
+    setVitalsOpen(false);
+    const remaining = vitalsRemainingRef.current;
+    const openedWith = vitalsOpenedWithRef.current;
+    const minCost = room?.settings.vitals_min_open_cost ?? 3;
+    const consumed = openedWith - remaining;
+    // Enforce minimum open cost — can't peek for free by closing instantly
+    const actualRemaining = consumed >= minCost
+      ? remaining
+      : Math.max(0, openedWith - minCost);
+
+    await supabase
+      .from('players')
+      .update({ vitals_charge_seconds: actualRemaining })
+      .eq('id', playerId);
   };
 
   const handleKillTap = async () => {
@@ -423,7 +497,7 @@ const allDone = livingCrew.every((p) => p.tasks.every((t) => t.done));
       const livingOthers = allPlayers.filter((p) => p.is_alive && p.id !== playerId && p.role === 'impostor');
       return (
         <ScrollView contentContainerStyle={styles.container}>
-          <Text style={styles.title}>Who killed you?</Text>
+          <Text style={styles.title}>Who eliminated you?</Text>
           {isFinalReport ? (
             <Text style={styles.progress}>
               The game just ended — you have {finalReportSecondsLeft}s to report before moving on.
@@ -444,18 +518,16 @@ const allDone = livingCrew.every((p) => p.tasks.every((t) => t.done));
 
 return (
       <View style={styles.centered}>
-          <View style={styles.nameBadgeRow}>
-          <View style={[styles.nameBadgeDot, { backgroundColor: getColorHex(player.color) }]} />
-          <Text style={styles.nameBadge}>Playing as: {player.display_name}</Text>
-          </View>
-          <Text style={styles.deadTitle}>You're Dead</Text>
-        <Text style={styles.deadSubtitle}>Spectating — you can no longer complete tasks or trigger meetings.</Text>
+          <RoleRevealButton displayName={player.display_name} role={player.role} color={player.color} />
+          <Text style={styles.deadTitle}>You've Been Eliminated</Text>
+        <Text style={styles.deadSubtitle}>Spectating — you can no longer complete assignments or trigger debriefs.</Text>
       </View>
     );
   }
 
   const isImpostor = player.role === 'impostor';
   const isImpostorOrJester = player.role === 'impostor' || player.role === 'jester';
+  const isScientist = player.role === 'scientist';
   const completedCount = player.tasks.filter((t) => t.done).length;
   const cooldownRemaining = getKillCooldownRemaining();
 
@@ -466,12 +538,9 @@ return (
         visibility={room?.settings.task_visibility}
         isMeeting={false}
       />
-   <View style={styles.nameBadgeRow}>
-        <View style={[styles.nameBadgeDot, { backgroundColor: getColorHex(player.color) }]} />
-        <Text style={styles.nameBadge}>Playing as: {player.display_name}</Text>
-      </View>
+   <RoleRevealButton displayName={player.display_name} role={player.role} color={player.color} />
       <Text style={styles.title}>
-        {isImpostorOrJester ? 'Fake Tasks' : 'Your Tasks'}
+        {isImpostorOrJester ? 'Fake Assignments' : 'Your Assignments'}
       </Text>
       <Text style={styles.progress}>{completedCount}/{player.tasks.length} completed</Text>
 
@@ -500,7 +569,7 @@ return (
           style={[styles.actionButton, styles.emergencyButton]}
           onPress={() => handleTriggerMeeting('emergency')}
         >
-          <Text style={styles.actionButtonText}>Emergency Meeting</Text>
+          <Text style={styles.actionButtonText}>Emergency Debrief</Text>
         </TouchableOpacity>
 
         {isImpostor ? (
@@ -510,7 +579,7 @@ return (
             disabled={cooldownRemaining > 0}
           >
             <Text style={[styles.actionButtonText, cooldownRemaining > 0 && styles.killButtonTextDisabled]}>
-              {cooldownRemaining > 0 ? `Kill (${cooldownRemaining}s)` : 'Kill'}
+              {cooldownRemaining > 0 ? `Burn (${cooldownRemaining}s)` : 'Burn'}
             </Text>
           </TouchableOpacity>
         ) : confirmingDeath ? (
@@ -523,14 +592,85 @@ return (
             </TouchableOpacity>
           </View>
         ) : (
-          <TouchableOpacity
-            style={[styles.actionButton, styles.killButton]}
-            onPress={handleIWasKilledTap}
-          >
-            <Text style={styles.actionButtonText}>I Was Killed</Text>
-          </TouchableOpacity>
+          <>
+            {isScientist && (
+              <TouchableOpacity
+                style={[
+                  styles.actionButton,
+                  styles.vitalsButton,
+                  (player.vitals_charge_seconds ?? 0) === 0 && styles.vitalsButtonDisabled,
+                ]}
+                onPress={openVitals}
+                disabled={(player.vitals_charge_seconds ?? 0) === 0}
+              >
+                <Text style={styles.actionButtonText}>
+                  Pulse ({player.vitals_charge_seconds ?? 0}s)
+                </Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={[styles.actionButton, styles.killButton]}
+              onPress={handleIWasKilledTap}
+            >
+              <Text style={styles.actionButtonText}>I Was Eliminated</Text>
+            </TouchableOpacity>
+          </>
         )}
       </View>
+
+      <Modal visible={pendingTaskIndex !== null} transparent animationType="fade">
+        <View style={styles.vitalsOverlay}>
+          <View style={styles.vitalsModal}>
+            <Text style={styles.vitalsTitle}>Complete Assignment?</Text>
+            <Text style={styles.vitalsTimer}>
+              {pendingTaskIndex !== null ? player.tasks[pendingTaskIndex]?.name : ''}
+            </Text>
+            <Text style={{ color: '#aaaaaa', fontSize: 13, textAlign: 'center', marginBottom: 20 }}>
+              This cannot be undone.
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <TouchableOpacity
+                style={[styles.vitalsCloseButton, { flex: 1, backgroundColor: '#333' }]}
+                onPress={() => setPendingTaskIndex(null)}
+              >
+                <Text style={styles.vitalsCloseText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.vitalsCloseButton, { flex: 1, backgroundColor: '#2ecc71' }]}
+                onPress={confirmTask}
+              >
+                <Text style={styles.vitalsCloseText}>Confirm</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={vitalsOpen} transparent animationType="fade">
+        <View style={styles.vitalsOverlay}>
+          <View style={styles.vitalsModal}>
+            <Text style={styles.vitalsTitle}>Pulse</Text>
+            <Text style={styles.vitalsTimer}>{vitalsSecondsLeft}s remaining</Text>
+            <ScrollView style={styles.vitalsList}>
+              {allPlayers
+                .filter((p) => p.id !== playerId)
+                .sort((a, b) => a.display_name.localeCompare(b.display_name))
+                .map((p) => (
+                  <View key={p.id} style={styles.vitalsRow}>
+                    <View style={[styles.vitalsStatusDot, { backgroundColor: p.is_alive ? '#2ecc71' : '#e74c3c' }]} />
+                    <Text style={styles.vitalsName}>{p.display_name}</Text>
+                    <Text style={[styles.vitalsStatus, { color: p.is_alive ? '#2ecc71' : '#e74c3c' }]}>
+                      {p.is_alive ? 'Alive' : 'Dead'}
+                    </Text>
+                  </View>
+                ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.vitalsCloseButton} onPress={closeVitals}>
+              <Text style={styles.vitalsCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -689,5 +829,80 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  vitalsButton: {
+    borderColor: '#2ecc71',
+    backgroundColor: '#0d2b1a',
+  },
+  vitalsButtonDisabled: {
+    borderColor: '#555',
+    backgroundColor: '#1e1e2e',
+    opacity: 0.7,
+  },
+  vitalsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  vitalsModal: {
+    backgroundColor: '#16213e',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxHeight: '70%',
+    borderWidth: 1,
+    borderColor: '#2ecc71',
+  },
+  vitalsTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#2ecc71',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  vitalsTimer: {
+    color: '#aaaaaa',
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  vitalsList: {
+    maxHeight: 300,
+  },
+  vitalsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+    gap: 10,
+  },
+  vitalsStatusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  vitalsName: {
+    color: '#ffffff',
+    fontSize: 16,
+    flex: 1,
+  },
+  vitalsStatus: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  vitalsCloseButton: {
+    marginTop: 16,
+    backgroundColor: '#0f3460',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  vitalsCloseText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

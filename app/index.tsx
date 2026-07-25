@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import HowToPlayModal from '../components/HowToPlayModal';
 import { PLAYER_COLORS } from '../constants/Colors';
 import { clearSession, getSession } from '../lib/session';
 import { supabase } from '../lib/supabase';
@@ -10,6 +11,7 @@ export default function HomeScreen() {
   const [name, setName] = useState('');
   const [selectedColor, setSelectedColor] = useState('Red');
   const [checkingSession, setCheckingSession] = useState(true);
+  const [showHowToPlay, setShowHowToPlay] = useState(false);
 
   useEffect(() => {
     resumeSessionOrLoadProfile();
@@ -71,7 +73,7 @@ if (checkingSession) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Among Us IRL</Text>
+      <Text style={styles.title}>Trust No One</Text>
 
       <Text style={styles.label}>Your Name</Text>
       <TextInput
@@ -113,6 +115,12 @@ if (checkingSession) {
       >
         <Text style={styles.buttonOutlineText}>Join Game</Text>
       </TouchableOpacity>
+
+      <TouchableOpacity style={styles.howToPlayLink} onPress={() => setShowHowToPlay(true)}>
+        <Text style={styles.howToPlayLinkText}>How to Play</Text>
+      </TouchableOpacity>
+
+      <HowToPlayModal visible={showHowToPlay} onClose={() => setShowHowToPlay(false)} />
     </ScrollView>
   );
 }
@@ -197,5 +205,14 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  howToPlayLink: {
+    marginTop: 20,
+    alignItems: 'center',
+  },
+  howToPlayLinkText: {
+    color: '#aaaaaa',
+    fontSize: 15,
+    textDecorationLine: 'underline',
   },
 });

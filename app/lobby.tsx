@@ -1,6 +1,7 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import HowToPlayModal from '../components/HowToPlayModal';
 import SettingsModal from '../components/SettingsModal';
 import { useHeartbeat } from '../hooks/useHeartbeat';
 import { useHostFailover } from '../hooks/useHostFailover';
@@ -54,6 +55,7 @@ export default function LobbyScreen() {
   const [loading, setLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showManagePlayers, setShowManagePlayers] = useState(false);
+  const [showHowToPlay, setShowHowToPlay] = useState(false);
 
   useHeartbeat(playerId);
   useHostFailover(roomId, players, playerId, 20000); // 20s — lobby has no legitimate reason for a long gap
@@ -289,14 +291,14 @@ const handlePromoteHost = async (newHostId: string) => {
         </Text>
       </TouchableOpacity>
       <View style={styles.settingsBox}>
-        <SettingRow label="Impostors" value={room?.settings.impostor_count ?? 1} isHost={isHost} />
-        <SettingRow label="Tasks per player" value={room?.settings.task_count ?? 3} isHost={isHost} />
-        <SettingRow label="Kill cooldown" value={`${room?.settings.kill_cooldown ?? 30}s`} isHost={isHost} />
+        <SettingRow label="Moles" value={room?.settings.impostor_count ?? 1} isHost={isHost} />
+        <SettingRow label="Assignments per player" value={room?.settings.task_count ?? 3} isHost={isHost} />
+        <SettingRow label="Burn cooldown" value={`${room?.settings.kill_cooldown ?? 30}s`} isHost={isHost} />
         <SettingRow label="Gathering time" value={`${room?.settings.gathering_time ?? 45}s`} isHost={isHost} />
-        <SettingRow label="Discussion time" value={`${room?.settings.discussion_time ?? 60}s`} isHost={isHost} />
+        <SettingRow label="Debrief time" value={`${room?.settings.discussion_time ?? 60}s`} isHost={isHost} />
         <SettingRow label="Voting time" value={`${room?.settings.voting_time ?? 60}s`} isHost={isHost} />
-        <SettingRow label="Emergency meetings" value={room?.settings.emergency_meetings ?? 1} isHost={isHost} />
-        <SettingRow label="Role reveal on eject" value={room?.settings.role_reveal ? 'On' : 'Off'} isHost={isHost} />
+        <SettingRow label="Emergency debriefs" value={room?.settings.emergency_meetings ?? 1} isHost={isHost} />
+        <SettingRow label="Role reveal on burn" value={room?.settings.role_reveal ? 'On' : 'Off'} isHost={isHost} />
         <SettingRow label="Task visibility" value={room?.settings.task_visibility ?? 'Meetings'} isHost={isHost} />
       </View>
 
@@ -306,9 +308,15 @@ const handlePromoteHost = async (newHostId: string) => {
         </TouchableOpacity>
       )}
 
+      <TouchableOpacity onPress={() => setShowHowToPlay(true)} style={styles.howToPlayLink}>
+        <Text style={styles.howToPlayLinkText}>How to Play</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity onPress={handleLeave} style={styles.backButton}>
         <Text style={styles.backText}>Leave Lobby</Text>
       </TouchableOpacity>
+
+      <HowToPlayModal visible={showHowToPlay} onClose={() => setShowHowToPlay(false)} />
 
       {isHost && (
         <TouchableOpacity style={styles.startButton} onPress={handleStartGame}>
@@ -614,5 +622,14 @@ hostBadge: {
   modalCloseText: {
     color: '#aaaaaa',
     fontSize: 15,
+  },
+  howToPlayLink: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  howToPlayLinkText: {
+    color: '#aaaaaa',
+    fontSize: 15,
+    textDecorationLine: 'underline',
   },
 });

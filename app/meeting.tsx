@@ -1,6 +1,7 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import RoleRevealButton from '../components/RoleRevealButton';
 import { useHeartbeat } from '../hooks/useHeartbeat';
 import { useHostFailover } from '../hooks/useHostFailover';
 import { supabase } from '../lib/supabase';
@@ -394,12 +395,19 @@ const fetchPlayers = async () => {
     <View style={styles.container}>
       <Text style={styles.phaseLabel}>{isDiscussion ? 'Discussion' : 'Voting'}</Text>
       <Text style={styles.timer}>{secondsLeft}</Text>
+      {currentPlayer && (
+        <RoleRevealButton
+          displayName={currentPlayer.display_name}
+          role={currentPlayer.role}
+          color={currentPlayer.color}
+        />
+      )}
 
       {!isDiscussion && isAlive && hasVoted && (
         <Text style={styles.votedBanner}>Your vote is locked in</Text>
       )}
       {!isDiscussion && !isAlive && (
-        <Text style={styles.votedBanner}>You are dead and cannot vote</Text>
+        <Text style={styles.votedBanner}>You have been eliminated and cannot vote</Text>
       )}
 
       <ScrollView style={styles.playerList} contentContainerStyle={styles.playerListContent}>

@@ -13,7 +13,8 @@ type Settings = {
   tasks?: { name: string; location: string }[];
   jester_enabled?: boolean;
   scientist_enabled?: boolean;
-  vitals_duration?: number;
+  vitals_seconds_per_task?: number;
+  vitals_min_open_cost?: number;
   anonymous_voting?: boolean;
   gathering_time?: number;
 };
@@ -175,15 +176,25 @@ export default function SettingsModal({ visible, settings, onClose, onSave }: Pr
               hint="Crewmate who can check vitals — earns views by completing tasks"
             />
             {local.scientist_enabled && (
-              <NumberPicker
-                label="Vitals duration"
-                value={local.vitals_duration ?? 10}
-                min={5}
-                max={30}
-                step={5}
-                suffix="s"
-                onChange={(v) => update('vitals_duration', v)}
-              />
+              <>
+                <NumberPicker
+                  label="Seconds earned per task"
+                  value={local.vitals_seconds_per_task ?? 10}
+                  min={5}
+                  max={30}
+                  step={5}
+                  suffix="s"
+                  onChange={(v) => update('vitals_seconds_per_task', v)}
+                />
+                <NumberPicker
+                  label="Min seconds to open vitals"
+                  value={local.vitals_min_open_cost ?? 3}
+                  min={1}
+                  max={10}
+                  suffix="s"
+                  onChange={(v) => update('vitals_min_open_cost', v)}
+                />
+              </>
             )}
 
             {/* Meetings */}

@@ -22,37 +22,37 @@ function getRoleConfig(role: string): TeamConfig {
   switch (role) {
     case 'crewmate':
       return {
-        team: 'Crewmate',
+        team: 'Operative',
         teamColor: '#3498db',
-        teamDescription: 'Complete all tasks or work together to vote out all Impostors to win.',
+        teamDescription: 'Complete all assignments or work together to burn all Moles to win.',
       };
     case 'scientist':
       return {
-        team: 'Crewmate',
+        team: 'Operative',
         teamColor: '#3498db',
-        teamDescription: 'Complete all tasks or work together to vote out all Impostors to win.',
-        roleName: 'Scientist',
-        roleDescription: 'Complete tasks to earn Vitals checks. Use them to see who is alive or dead in real time.',
+        teamDescription: 'Complete all assignments or work together to burn all Moles to win.',
+        roleName: 'Hacker',
+        roleDescription: 'Complete assignments to earn Pulse checks. Use them to see who is alive or dead in real time.',
       };
     case 'impostor':
       return {
-        team: 'Impostor',
+        team: 'The Mole',
         teamColor: '#e74c3c',
-        teamDescription: 'Eliminate Crewmates without getting caught. Fake your tasks to blend in and avoid suspicion.',
+        teamDescription: 'Eliminate Operatives without getting caught. Fake your assignments to blend in and avoid suspicion.',
       };
     case 'jester':
       return {
         team: 'Neutral',
         teamColor: '#9b59b6',
-        teamDescription: 'You are not Crewmate or Impostor.',
-        roleName: 'Jester',
-        roleDescription: 'Get yourself voted out to win. Act suspicious enough to get ejected — but not too obvious.',
+        teamDescription: 'You are not an Operative or a Mole.',
+        roleName: 'Loose Cannon',
+        roleDescription: 'Get yourself burned to win. Act suspicious enough to get voted out — but not too obvious.',
       };
     default:
       return {
-        team: 'Crewmate',
+        team: 'Operative',
         teamColor: '#3498db',
-        teamDescription: 'Complete all tasks or work together to vote out all Impostors to win.',
+        teamDescription: 'Complete all assignments or work together to burn all Moles to win.',
       };
   }
 }
@@ -134,7 +134,7 @@ useEffect(() => {
         <View style={styles.roleSection}>
           <Text style={styles.sectionLabel}>Your Teammates</Text>
           {impostorTeammates.length === 0 ? (
-            <Text style={styles.teamDescription}>You are the sole Impostor.</Text>
+            <Text style={styles.teamDescription}>You are the sole Mole.</Text>
           ) : (
             impostorTeammates.map((t) => (
               <Text key={t.id} style={styles.roleName}>{t.display_name}</Text>
