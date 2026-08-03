@@ -26,8 +26,26 @@ type Room = {
   };
 };
 
+function getRoleLabel(role: string): string {
+  if (role === 'impostor') return 'The Mole';
+  if (role === 'jester') return 'Loose Cannon';
+  if (role === 'scientist') return 'Hacker';
+  return 'an Operative';
+}
+
+function getRoleColor(role: string): string {
+  if (role === 'impostor') return '#E5383B';
+  if (role === 'jester') return '#FFD60A';
+  if (role === 'scientist') return '#22D3C8';
+  return '#2CB67D';
+}
+
 export default function ResultsScreen() {
-  const { roomId, playerId, meetingId } = useLocalSearchParams<{ roomId: string; playerId: string; meetingId: string }>();
+  const { roomId, playerId, meetingId } = useLocalSearchParams<{
+    roomId: string;
+    playerId: string;
+    meetingId: string;
+  }>();
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [ejectedPlayer, setEjectedPlayer] = useState<Player | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -41,7 +59,6 @@ export default function ResultsScreen() {
     fetchData();
   }, []);
 
-  // Countdown ticks down only
   useEffect(() => {
     if (loading) return;
     const timer = setInterval(() => {
@@ -50,7 +67,6 @@ export default function ResultsScreen() {
     return () => clearInterval(timer);
   }, [loading]);
 
-  // Navigation is a separate effect, triggered when countdown hits 0
   useEffect(() => {
     if (secondsLeft <= 0 && !loading) {
       proceedNext();
@@ -84,13 +100,18 @@ export default function ResultsScreen() {
       }
     }
 
+    const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     const { data: allPlayers } = await supabase
-      .from('players')
-      .select('*')
-      .eq('room_id', roomId);
+  .from('players')
+  .select('*')
+  .eq('room_id', roomId)
+  .gte('last_seen', cutoff);
 
     if (allPlayers) {
-      const remaining = allPlayers.filter((p) => p.is_alive && p.role === 'impostor').length;
+      // Only count impostors who are alive AND actively connected/in the current game
+      const remaining = allPlayers.filter(
+        (p) => p.is_alive && p.role === 'impostor' && p.status === 'connected'
+      ).length;
       setRemainingImpostors(remaining);
     }
 
@@ -99,8 +120,6 @@ export default function ResultsScreen() {
   };
 
   const proceedNext = async () => {
-    // Re-check fresh instead of trusting the snapshot from mount — the win-condition write
-    // can land moments after this screen loads, so the initial fetch may already be stale.
     const { data: latestRoom } = await supabase
       .from('rooms')
       .select('status')
@@ -117,40 +136,77 @@ export default function ResultsScreen() {
   if (loading || !meeting) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#e74c3c" />
+        <ActivityIndicator size="large" color="#F0B429" />
       </View>
     );
   }
 
   const showRoleReveal = room?.settings.role_reveal ?? false;
+  const isEjected = meeting.result_type === 'ejected' && ejectedPlayer;
+
+  // Determine headline
+  let headline = '';
+  let subline = '';
+
+  if (meeting.result_type === 'skipped') {
+    headline = 'Vote Skipped';
+    subline = 'No one was burned.';
+  } else if (meeting.result_type === 'tie') {
+    headline = 'Tied Vote';
+    subline = 'A tie means no one gets burned.';
+  } else if (isEjected) {
+    headline = 'Burned';
+    subline = `${ejectedPlayer.display_name} has been eliminated.`;
+  }
 
   return (
     <View style={styles.container}>
-      {meeting.result_type === 'skipped' && (
-        <Text style={styles.resultText}>No one was ejected.</Text>
-      )}
+      {/* Top accent bar */}
+      <View style={styles.accentBar} />
 
-      {meeting.result_type === 'tie' && (
-        <Text style={styles.resultText}>The vote was tied. No one was ejected.</Text>
-      )}
+      <View style={styles.inner}>
+        {/* Debrief label */}
+        <Text style={styles.eyebrow}>DEBRIEF RESULT</Text>
 
-      {meeting.result_type === 'ejected' && ejectedPlayer && (
-        <>
-          <Text style={styles.resultText}>{ejectedPlayer.display_name} was ejected.</Text>
-          {showRoleReveal && (
-            <>
-              <Text style={styles.roleText}>
-                They were {ejectedPlayer.role === 'impostor' ? 'an Impostor' : ejectedPlayer.role === 'jester' ? 'the Jester' : 'a Crewmate'}.
-              </Text>
-              {ejectedPlayer.role === 'impostor' && (
-                <Text style={styles.subText}>{remainingImpostors} Impostor{remainingImpostors !== 1 ? 's' : ''} remain.</Text>
-              )}
-            </>
-          )}
-        </>
-      )}
+        {/* Headline */}
+        <Text style={styles.headline}>{headline}</Text>
+        <Text style={styles.subline}>{subline}</Text>
 
-      <Text style={styles.countdown}>Returning in {secondsLeft}...</Text>
+        {/* Role reveal card */}
+        {isEjected && showRoleReveal && ejectedPlayer && (
+          <View style={styles.roleCard}>
+            <Text style={styles.roleCardLabel}>ROLE REVEALED</Text>
+            <Text style={[styles.roleCardRole, { color: getRoleColor(ejectedPlayer.role) }]}>
+              {getRoleLabel(ejectedPlayer.role)}
+            </Text>
+
+            {ejectedPlayer.role === 'impostor' && (
+              <View style={styles.moleRemain}>
+                <View style={styles.moleRemainDivider} />
+                <Text style={styles.moleRemainText}>
+                  {remainingImpostors} Mole{remainingImpostors !== 1 ? 's' : ''} still active
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* No reveal card */}
+        {isEjected && !showRoleReveal && (
+          <View style={styles.roleCard}>
+            <Text style={styles.roleCardLabel}>ROLE</Text>
+            <Text style={styles.roleCardUnknown}>Unknown</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Countdown pill */}
+      <View style={styles.countdownRow}>
+        <View style={styles.countdownPill}>
+          <Text style={styles.countdownNumber}>{secondsLeft}</Text>
+          <Text style={styles.countdownLabel}>RETURNING</Text>
+        </View>
+      </View>
     </View>
   );
 }
@@ -158,38 +214,122 @@ export default function ResultsScreen() {
 const styles = StyleSheet.create({
   centered: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
     alignItems: 'center',
     justifyContent: 'center',
   },
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
+  },
+  accentBar: {
+    height: 3,
+    backgroundColor: '#F0B429',
+    width: '100%',
+  },
+  inner: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 32,
+    paddingHorizontal: 32,
+    paddingTop: 24,
   },
-  resultText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#ffffff',
+  eyebrow: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    letterSpacing: 3,
+    color: '#5A5A7A',
+    marginBottom: 16,
+    textTransform: 'uppercase',
+  },
+  headline: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 48,
+    color: '#F0F0FA',
     textAlign: 'center',
+    letterSpacing: 1,
+    marginBottom: 10,
+  },
+  subline: {
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 16,
+    color: '#5A5A7A',
+    textAlign: 'center',
+    marginBottom: 36,
+  },
+
+  // Role reveal card
+  roleCard: {
+    backgroundColor: '#16162A',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#22223A',
+    paddingVertical: 28,
+    paddingHorizontal: 40,
+    alignItems: 'center',
+    width: '100%',
+  },
+  roleCardLabel: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    letterSpacing: 3,
+    color: '#5A5A7A',
     marginBottom: 12,
+    textTransform: 'uppercase',
   },
-  roleText: {
-    fontSize: 18,
-    color: '#e74c3c',
-    fontWeight: '600',
-    marginBottom: 4,
+  roleCardRole: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 34,
+    letterSpacing: 1,
   },
-  subText: {
+  roleCardUnknown: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 34,
+    color: '#3A3A5A',
+  },
+  moleRemain: {
+    alignItems: 'center',
+    marginTop: 20,
+    width: '100%',
+  },
+  moleRemainDivider: {
+    height: 1,
+    backgroundColor: '#22223A',
+    width: '80%',
+    marginBottom: 16,
+  },
+  moleRemainText: {
+    fontFamily: 'Nunito_600SemiBold',
     fontSize: 14,
-    color: '#aaaaaa',
-    marginBottom: 24,
+    color: '#E5383B',
   },
-  countdown: {
-    fontSize: 14,
-    color: '#555',
-    marginTop: 32,
+
+  // Countdown
+  countdownRow: {
+    alignItems: 'center',
+    paddingBottom: 48,
+  },
+  countdownPill: {
+    backgroundColor: '#16162A',
+    borderRadius: 32,
+    borderWidth: 1,
+    borderColor: '#22223A',
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  countdownNumber: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 22,
+    color: '#F0B429',
+  },
+  countdownLabel: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    letterSpacing: 3,
+    color: '#5A5A7A',
+    textTransform: 'uppercase',
   },
 });

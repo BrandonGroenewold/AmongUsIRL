@@ -1,7 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { PLAYER_COLORS } from '../constants/Colors';
 import { getDeviceId, getSession, saveSession } from '../lib/session';
 import { supabase } from '../lib/supabase';
@@ -17,17 +24,16 @@ export default function JoinGameScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-    const handleJoin = async () => {
+  const handleJoin = async () => {
     if (code.length !== 6) return;
     setLoading(true);
     setError('');
 
-    // If this device already has a player row in the exact room being joined, reuse it
-    // instead of creating a duplicate — prevents ghost/disconnected duplicate rows when
-    // someone re-joins a room they never actually left
     const existingSession = await getSession();
     if (existingSession && existingSession.roomCode === code) {
-      router.replace(`/lobby?roomId=${existingSession.roomId}&playerId=${existingSession.playerId}`);
+      router.replace(
+        `/lobby?roomId=${existingSession.roomId}&playerId=${existingSession.playerId}`
+      );
       return;
     }
 
@@ -68,7 +74,7 @@ export default function JoinGameScreen() {
     const takenColors = existingPlayers?.map((p) => p.color) ?? [];
     const assignedColor = getAvailableColor(color, takenColors);
 
-const { data: player, error: playerError } = await supabase
+    const { data: player, error: playerError } = await supabase
       .from('players')
       .insert({
         room_id: room.id,
@@ -80,48 +86,55 @@ const { data: player, error: playerError } = await supabase
       .select()
       .single();
 
-if (playerError || !player) {
+    if (playerError || !player) {
       setError('Failed to join room. Please try again.');
       setLoading(false);
       return;
     }
 
     await saveSession({ roomId: room.id, playerId: player.id, roomCode: room.code });
-
     router.replace(`/lobby?roomId=${room.id}&playerId=${player.id}`);
   };
 
+  const canJoin = code.length === 6;
+
   return (
     <View style={styles.container}>
+      {/* Header */}
       <Text style={styles.title}>Join Game</Text>
+      <Text style={styles.subtitle}>Enter the room code from your host</Text>
 
-      <Text style={styles.label}>Room Code</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Enter 6-digit code"
-        placeholderTextColor="#888"
-        value={code}
-        onChangeText={(text) => setCode(text.toUpperCase())}
-        maxLength={6}
-        autoCapitalize="characters"
-        autoFocus
-      />
+      {/* Form */}
+      <View style={styles.form}>
+        <Text style={styles.inputLabel}>ROOM CODE</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="······"
+          placeholderTextColor="#3A3A5A"
+          value={code}
+          onChangeText={(text) => setCode(text.toUpperCase())}
+          maxLength={6}
+          autoCapitalize="characters"
+          autoFocus
+        />
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {loading ? (
-        <ActivityIndicator size="large" color="#e74c3c" />
-      ) : (
-        <TouchableOpacity
-          style={[styles.button, code.length !== 6 && styles.buttonDisabled]}
-          onPress={handleJoin}
-          disabled={code.length !== 6}
-        >
-          <Text style={styles.buttonText}>Join Room</Text>
-        </TouchableOpacity>
-      )}
+        {loading ? (
+          <ActivityIndicator size="large" color="#F0B429" style={styles.spinner} />
+        ) : (
+          <TouchableOpacity
+            style={[styles.primaryButton, !canJoin && styles.buttonDisabled]}
+            onPress={handleJoin}
+            disabled={!canJoin}
+          >
+            <Text style={styles.primaryButtonText}>JOIN ROOM</Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
-      <TouchableOpacity onPress={() => router.back()}>
+      {/* Back */}
+      <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
         <Text style={styles.backText}>Back</Text>
       </TouchableOpacity>
     </View>
@@ -131,62 +144,87 @@ if (playerError || !player) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
+
+  // Header
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#ffffff',
-    marginBottom: 32,
-  },
-  label: {
-    color: '#aaaaaa',
-    fontSize: 14,
-    alignSelf: 'flex-start',
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 36,
+    color: '#F0F0FA',
     marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+  },
+  subtitle: {
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 14,
+    color: '#5A5A7A',
+    marginBottom: 44,
+    textAlign: 'center',
+  },
+
+  // Form
+  form: {
+    width: '100%',
+    gap: 10,
+  },
+  inputLabel: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    color: '#5A5A7A',
+    letterSpacing: 2,
   },
   input: {
     width: '100%',
-    backgroundColor: '#16213e',
-    color: '#ffffff',
-    borderRadius: 8,
-    padding: 14,
-    fontSize: 24,
-    marginBottom: 24,
+    backgroundColor: '#16162A',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 20,
+    fontSize: 30,
+    fontFamily: 'Nunito_600SemiBold',
+    color: '#F0F0FA',
     borderWidth: 1,
-    borderColor: '#333',
+    borderColor: '#22223A',
     textAlign: 'center',
-    letterSpacing: 8,
+    letterSpacing: 12,
+    marginBottom: 4,
   },
   error: {
-    color: '#e74c3c',
-    marginBottom: 16,
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 13,
+    color: '#E5383B',
     textAlign: 'center',
   },
-  button: {
-    backgroundColor: '#e74c3c',
-    paddingVertical: 14,
-    paddingHorizontal: 48,
-    borderRadius: 8,
-    width: '100%',
+  spinner: {
+    marginVertical: 10,
+  },
+
+  // Buttons
+  primaryButton: {
+    backgroundColor: '#F0B429',
+    paddingVertical: 18,
+    borderRadius: 16,
     alignItems: 'center',
-    marginBottom: 16,
+    marginTop: 4,
   },
   buttonDisabled: {
-    opacity: 0.4,
+    opacity: 0.35,
   },
-  buttonText: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: 'bold',
+  primaryButtonText: {
+    fontFamily: 'Nunito_900Black',
+    color: '#09091A',
+    fontSize: 17,
+    letterSpacing: 2,
+  },
+  backButton: {
+    marginTop: 32,
+    padding: 8,
   },
   backText: {
-    color: '#aaaaaa',
-    fontSize: 16,
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 15,
+    color: '#4A4A6A',
   },
 });

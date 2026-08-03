@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { PLAYER_COLORS } from '../constants/Colors';
 import { getDeviceId, saveSession } from '../lib/session';
@@ -13,15 +13,11 @@ function getAvailableColor(preferred: string, taken: string[]): string {
 }
 
 export default function CreateGameScreen() {
-  const [loading, setLoading] = useState(false);
-
   useEffect(() => {
     createRoom();
   }, []);
 
   const createRoom = async () => {
-    setLoading(true);
-
     const name = await AsyncStorage.getItem('player_name');
     const color = await AsyncStorage.getItem('player_color');
 
@@ -40,7 +36,6 @@ export default function CreateGameScreen() {
 
     if (roomError || !room) {
       console.error('Failed to create room', roomError);
-      setLoading(false);
       return;
     }
 
@@ -68,15 +63,10 @@ export default function CreateGameScreen() {
 
     if (playerError || !player) {
       console.error('Failed to create player', playerError);
-      setLoading(false);
       return;
     }
 
-    await supabase
-      .from('rooms')
-      .update({ host_id: player.id })
-      .eq('id', room.id);
-
+    await supabase.from('rooms').update({ host_id: player.id }).eq('id', room.id);
     await saveSession({ roomId: room.id, playerId: player.id, roomCode: room.code });
 
     router.replace(`/lobby?roomId=${room.id}&playerId=${player.id}`);
@@ -84,8 +74,9 @@ export default function CreateGameScreen() {
 
   return (
     <View style={styles.container}>
-      <ActivityIndicator size="large" color="#e74c3c" />
-      <Text style={styles.text}>Creating room...</Text>
+      <Text style={styles.logo}>Trust No One</Text>
+      <ActivityIndicator size="large" color="#F0B429" style={styles.spinner} />
+      <Text style={styles.label}>Establishing operation...</Text>
     </View>
   );
 }
@@ -93,13 +84,24 @@ export default function CreateGameScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 16,
+    padding: 24,
   },
-  text: {
-    color: '#aaaaaa',
-    fontSize: 16,
+  logo: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 30,
+    color: '#F0B429',
+    marginBottom: 8,
+  },
+  spinner: {
+    marginVertical: 4,
+  },
+  label: {
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 14,
+    color: '#5A5A7A',
   },
 });

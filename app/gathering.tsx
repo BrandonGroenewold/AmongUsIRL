@@ -1,6 +1,13 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useHeartbeat } from '../hooks/useHeartbeat';
 import { useHostFailover } from '../hooks/useHostFailover';
 import { supabase } from '../lib/supabase';
@@ -37,20 +44,17 @@ export default function GatheringScreen() {
   const [loading, setLoading] = useState(true);
   const [isReady, setIsReady] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(45);
+  const [totalSeconds, setTotalSeconds] = useState(45);
   const [hasTriggered, setHasTriggered] = useState(false);
 
   useHeartbeat(playerId);
-  useHostFailover(roomId, players, playerId, 30000); // 30s — no task delay excuse during gathering, keep handoff snappy
+  useHostFailover(roomId, players, playerId, 30000);
 
-  // Derived from the players table (already kept in sync via realtime), not room.host_id —
-  // this screen doesn't subscribe to the rooms table, so room.host_id would go stale after
-  // a mid-meeting host promotion
   const currentPlayer = players.find((p) => p.id === playerId);
   const isHost = currentPlayer?.is_host ?? false;
 
-useFocusEffect(
+  useFocusEffect(
     useCallback(() => {
-      // Reset any leftover UI state from a previous visit to this screen
       setIsReady(false);
       setHasTriggered(false);
       setLoading(true);
@@ -94,7 +98,6 @@ useFocusEffect(
     return () => clearInterval(timer);
   }, [loading]);
 
-  // Only the host checks the timeout condition
   useEffect(() => {
     if (!isHost || hasTriggered) return;
     if (secondsLeft <= 0) {
@@ -103,8 +106,6 @@ useFocusEffect(
     }
   }, [secondsLeft, isHost, hasTriggered]);
 
-  // Only the host checks the all-ready condition. Disconnected players don't block
-  // early completion — only active living players need to be ready.
   useEffect(() => {
     if (!isHost || hasTriggered || loading) return;
     const activeLivingPlayers = players.filter((p) => p.is_alive && !isDisconnected(p.last_seen));
@@ -115,7 +116,6 @@ useFocusEffect(
     }
   }, [players, isHost, hasTriggered, loading]);
 
-// Runs ONCE on mount: fetches room settings (sets the countdown starting point) and players
   const initialLoad = async () => {
     const { data: roomData } = await supabase
       .from('rooms')
@@ -125,13 +125,11 @@ useFocusEffect(
 
     if (roomData) {
       setRoom(roomData);
-      setSecondsLeft(roomData.settings.gathering_time ?? 45);
+      const secs = roomData.settings.gathering_time ?? 45;
+      setSecondsLeft(secs);
+      setTotalSeconds(secs);
     }
 
-    // Catch reconnecting after discussion has actually started. Meetings are created with
-    // status 'discussion' from the moment they're triggered, so status alone can't tell us
-    // whether gathering already finished — discussion_started_at is the real signal, since
-    // it's only set once the timer genuinely begins.
     const { data: latestMeeting } = await supabase
       .from('meetings')
       .select('status, discussion_started_at')
@@ -149,7 +147,6 @@ useFocusEffect(
     setLoading(false);
   };
 
-  // Runs on every player change — does NOT touch the countdown
   const fetchPlayers = async () => {
     const { data: playersData } = await supabase
       .from('players')
@@ -182,33 +179,98 @@ useFocusEffect(
       .limit(1);
   };
 
-  if (loading) {
+ if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#e74c3c" />
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color="#F0B429" />
+      </View>
+    );
+  }
+
+  if (!currentPlayer?.is_alive) {
+    return (
+      <View style={styles.centered}>
+        <StatusBar style="light" />
+        <Text style={styles.title}>Eliminated</Text>
+        <Text style={styles.subtitle}>You're spectating this debrief</Text>
       </View>
     );
   }
 
   const activeLivingPlayers = players.filter((p) => p.is_alive && !isDisconnected(p.last_seen));
   const readyCount = activeLivingPlayers.filter((p) => p.ready_for_meeting).length;
+  const alivePlayers = players.filter((p) => p.is_alive);
+  const isUrgent = secondsLeft <= 10;
+  const progressPercent = totalSeconds > 0 ? (secondsLeft / totalSeconds) * 100 : 0;
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Heading to Meeting</Text>
+      <StatusBar style="light" />
+
+      {/* Header */}
+      <Text style={styles.title}>Heading to{'\n'}Debrief</Text>
       <Text style={styles.subtitle}>Make your way to the meeting spot</Text>
 
-      <Text style={styles.countdown}>{secondsLeft}</Text>
-      <Text style={styles.countdownLabel}>seconds remaining</Text>
+      {/* Countdown card */}
+      <View style={styles.countdownCard}>
+        <Text style={[styles.countdownNumber, isUrgent && styles.countdownUrgent]}>
+          {secondsLeft}
+        </Text>
+        <Text style={styles.countdownUnit}>SECONDS REMAINING</Text>
 
-      <Text style={styles.readyCount}>{readyCount}/{activeLivingPlayers.length} players ready</Text>
+        {/* Depleting progress bar */}
+        <View style={styles.progressTrack}>
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${progressPercent}%` as any },
+              isUrgent && styles.progressUrgent,
+            ]}
+          />
+        </View>
+      </View>
 
+      {/* Player ready dots */}
+      <View style={styles.playersCard}>
+        <Text style={styles.cardLabel}>PLAYERS READY</Text>
+
+        <View style={styles.dotsWrap}>
+          {alivePlayers.map((player) => {
+            const disconnected = isDisconnected(player.last_seen);
+            const ready = player.ready_for_meeting;
+            return (
+              <View
+                key={player.id}
+                style={[
+                  styles.dot,
+                  { backgroundColor: player.color },
+                  ready && styles.dotReady,
+                  disconnected && styles.dotDisconnected,
+                ]}
+              >
+                {ready && <Text style={styles.dotCheck}>✓</Text>}
+              </View>
+            );
+          })}
+        </View>
+
+        <Text style={styles.readyCount}>
+          <Text style={styles.readyCountBold}>{readyCount}</Text>
+          {' '}of {activeLivingPlayers.length} here
+        </Text>
+      </View>
+
+      {/* CTA */}
       <TouchableOpacity
-        style={[styles.readyButton, isReady && styles.readyButtonActive]}
+        style={[styles.button, isReady && styles.buttonDone]}
         onPress={handleImHere}
         disabled={isReady}
+        activeOpacity={0.85}
       >
-        <Text style={styles.readyButtonText}>{isReady ? "You're Ready ✓" : "I'm Here"}</Text>
+        <Text style={[styles.buttonText, isReady && styles.buttonTextDone]}>
+          {isReady ? "You're Here ✓" : "I'm Here"}
+        </Text>
       </TouchableOpacity>
     </View>
   );
@@ -217,58 +279,159 @@ useFocusEffect(
 const styles = StyleSheet.create({
   centered: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
     alignItems: 'center',
     justifyContent: 'center',
   },
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 32,
+    paddingHorizontal: 24,
+    paddingVertical: 48,
   },
+
+  // Header
   title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#ffffff',
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 36,
+    color: '#F0F0FA',
+    textAlign: 'center',
+    lineHeight: 42,
     marginBottom: 8,
   },
   subtitle: {
-    color: '#aaaaaa',
-    fontSize: 16,
-    marginBottom: 40,
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 15,
+    color: '#5A5A7A',
+    textAlign: 'center',
+    marginBottom: 32,
   },
-  countdown: {
-    fontSize: 72,
-    fontWeight: 'bold',
-    color: '#f1c40f',
+
+  // Countdown card
+  countdownCard: {
+    width: '100%',
+    backgroundColor: '#16162A',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#22223A',
+    alignItems: 'center',
+    paddingTop: 28,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    marginBottom: 16,
   },
-  countdownLabel: {
-    color: '#aaaaaa',
-    fontSize: 14,
-    marginBottom: 40,
+  countdownNumber: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 88,
+    color: '#F0B429',
+    lineHeight: 96,
   },
-  readyCount: {
-    color: '#ffffff',
-    fontSize: 16,
+  countdownUrgent: {
+    color: '#E5383B',
+  },
+  countdownUnit: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    color: '#5A5A7A',
+    letterSpacing: 2,
+    marginTop: 2,
+    marginBottom: 20,
+  },
+  progressTrack: {
+    width: '100%',
+    height: 4,
+    backgroundColor: '#22223A',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#F0B429',
+    borderRadius: 2,
+  },
+  progressUrgent: {
+    backgroundColor: '#E5383B',
+  },
+
+  // Players card
+  playersCard: {
+    width: '100%',
+    backgroundColor: '#16162A',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#22223A',
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 20,
     marginBottom: 24,
   },
-  readyButton: {
-    backgroundColor: '#16213e',
-    borderWidth: 2,
-    borderColor: '#e74c3c',
-    paddingVertical: 16,
-    paddingHorizontal: 48,
-    borderRadius: 8,
+  cardLabel: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    color: '#5A5A7A',
+    letterSpacing: 2,
+    marginBottom: 16,
   },
-  readyButtonActive: {
-    backgroundColor: '#2ecc71',
-    borderColor: '#2ecc71',
+  dotsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 16,
   },
-  readyButtonText: {
-    color: '#ffffff',
+  dot: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dotReady: {
+    borderWidth: 3,
+    borderColor: '#F0B429',
+  },
+  dotDisconnected: {
+    opacity: 0.3,
+  },
+  dotCheck: {
+    fontFamily: 'Nunito_900Black',
     fontSize: 18,
-    fontWeight: 'bold',
+    color: '#09091A',
+  },
+  readyCount: {
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 15,
+    color: '#5A5A7A',
+  },
+  readyCountBold: {
+    fontFamily: 'Nunito_900Black',
+    color: '#F0F0FA',
+  },
+
+  // Button
+  button: {
+    width: '100%',
+    backgroundColor: '#F0B429',
+    paddingVertical: 18,
+    borderRadius: 16,
+    alignItems: 'center',
+  },
+  buttonDone: {
+    backgroundColor: 'transparent',
+    borderWidth: 2,
+    borderColor: '#2CB67D',
+    opacity: 0.35,
+  },
+  buttonText: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 17,
+    color: '#09091A',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  buttonTextDone: {
+    color: '#2CB67D',
   },
 });

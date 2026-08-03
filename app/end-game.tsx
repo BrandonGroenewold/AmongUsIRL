@@ -1,6 +1,13 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useHeartbeat } from '../hooks/useHeartbeat';
 import { useHostFailover } from '../hooks/useHostFailover';
 import { clearSession } from '../lib/session';
@@ -44,17 +51,29 @@ function getColorHex(colorName: string): string {
 }
 
 function getRoleLabel(role: string): string {
-  if (role === 'impostor') return 'Impostor';
-  if (role === 'jester') return 'Jester';
-  if (role === 'scientist') return 'Scientist';
-  return 'Crewmate';
+  if (role === 'impostor') return 'The Mole';
+  if (role === 'jester') return 'Loose Cannon';
+  if (role === 'scientist') return 'Hacker';
+  return 'Operative';
 }
 
-function getWinnerLabel(winner: string | null): string {
-  if (winner === 'impostor') return 'Impostors Win';
-  if (winner === 'jester') return 'Jester Wins';
-  if (winner === 'crewmate') return 'Crewmates Win';
-  return 'Game Over';
+function getRoleColor(role: string): string {
+  if (role === 'impostor') return '#E5383B';
+  if (role === 'jester') return '#FFD60A';
+  if (role === 'scientist') return '#22D3C8';
+  return '#2CB67D';
+}
+
+type WinnerConfig = {
+  label: string;
+  color: string;
+};
+
+function getWinnerConfig(winner: string | null): WinnerConfig {
+  if (winner === 'impostor') return { label: 'The Moles Win', color: '#E5383B' };
+  if (winner === 'jester') return { label: 'Loose Cannon Wins', color: '#FFD60A' };
+  if (winner === 'crewmate') return { label: 'Operatives Win', color: '#2CB67D' };
+  return { label: 'Game Over', color: '#F0B429' };
 }
 
 export default function EndGameScreen() {
@@ -72,7 +91,7 @@ export default function EndGameScreen() {
   }, [players]);
 
   useHeartbeat(playerId);
-  useHostFailover(roomId, players, playerId, 20000); // 20s — no timer pressure here, but no reason to leave the room host-less for long either
+  useHostFailover(roomId, players, playerId, 20000);
 
   const currentPlayer = players.find((p) => p.id === playerId);
   const isHost = currentPlayer?.is_host ?? false;
@@ -84,9 +103,6 @@ export default function EndGameScreen() {
       setReportWindowExpired(false);
       fetchEndGameData();
 
-      // Listen for the host resetting the room — everyone routes back to lobby together —
-      // and for a late-arriving kill report, since the last victim can still be mid-countdown
-      // on game.tsx's "who killed you" screen when the rest of us already landed here
       const channel = supabase
         .channel(`end-game-room:${roomId}`)
         .on(
@@ -117,8 +133,6 @@ export default function EndGameScreen() {
         )
         .subscribe();
 
-      // Give the last victim's 15s report window (plus a little network buffer) to come in
-      // before giving up and just showing "Eliminated" for anyone still unresolved
       const reportWindowTimer = setTimeout(() => setReportWindowExpired(true), 17000);
 
       return () => {
@@ -157,7 +171,6 @@ export default function EndGameScreen() {
     const playersList = playersData ?? [];
     if (playersData) setPlayers(playersData);
 
-    // Build a cause-of-death map so every dead player shows a real reason, not just "dead"
     const causes: Record<string, DeathCause> = {};
 
     (killsData ?? []).forEach((k) => {
@@ -171,12 +184,10 @@ export default function EndGameScreen() {
       }
     });
 
-      setDeathCauses(causes);
+    setDeathCauses(causes);
     setLoading(false);
   };
 
-  // Lighter-weight than fetchEndGameData — just refreshes the player list (host changes,
-  // someone leaving) without redoing the kills/meetings death-cause lookup every time
   const fetchPlayersOnly = async () => {
     const { data: playersData } = await supabase
       .from('players')
@@ -190,8 +201,6 @@ export default function EndGameScreen() {
   const handlePlayAgain = async () => {
     setResetting(true);
 
-    // Clean up last game's meetings/votes/kills so they don't bleed into the next game's
-    // end-screen or task/kill logic, since everything is still keyed off the same room_id
     const { data: oldMeetings } = await supabase
       .from('meetings')
       .select('id')
@@ -204,7 +213,6 @@ export default function EndGameScreen() {
     await supabase.from('meetings').delete().eq('room_id', roomId);
     await supabase.from('kills').delete().eq('room_id', roomId);
 
-    // Reset every player back to a clean lobby state, keeping their identity/color/host status
     await supabase
       .from('players')
       .update({
@@ -217,19 +225,19 @@ export default function EndGameScreen() {
       })
       .eq('room_id', roomId);
 
-await supabase
+    await supabase
       .from('rooms')
       .update({ status: 'lobby', winner: null })
       .eq('id', roomId);
-
-    // The realtime subscription above will route everyone (including this device) to lobby
   };
 
   const handleLeave = async () => {
     if (isHost) {
       const nextHost = players
         .filter((p) => p.id !== playerId)
-        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())[0];
+        .sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        )[0];
 
       if (nextHost) {
         await supabase.from('players').update({ is_host: true }).eq('id', nextHost.id);
@@ -237,13 +245,12 @@ await supabase
       }
     }
 
-     const { error: deleteError } = await supabase
+    const { error: deleteError } = await supabase
       .from('players')
       .delete()
       .eq('id', playerId);
-    if (deleteError) {
-      console.error('Failed to delete player row on leave:', deleteError);
-    }
+    if (deleteError) console.error('Failed to delete player row on leave:', deleteError);
+
     await clearSession();
     router.replace('/');
   };
@@ -251,62 +258,95 @@ await supabase
   if (loading || !room) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator size="large" color="#e74c3c" />
+        <ActivityIndicator size="large" color="#F0B429" />
       </View>
     );
   }
 
-  return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.winnerBanner}>{getWinnerLabel(room.winner)}</Text>
+  const winner = getWinnerConfig(room.winner);
 
-      <Text style={styles.sectionLabel}>Final Roles</Text>
+  return (
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
+    >
+      {/* Winner banner */}
+      <View style={[styles.winnerBanner, { borderColor: winner.color }]}>
+        <Text style={styles.winnerEyebrow}>MISSION COMPLETE</Text>
+        <Text style={[styles.winnerHeadline, { color: winner.color }]}>
+          {winner.label}
+        </Text>
+      </View>
+
+      {/* Section header */}
+      <Text style={styles.sectionLabel}>FINAL DOSSIER</Text>
+
+      {/* Player cards */}
       <View style={styles.playerList}>
-        {players.map((p) => {
+        {players.map((p, index) => {
           const cause = deathCauses[p.id];
           const completedCount = p.tasks.filter((t) => t.done).length;
           const isFakeTasks = p.role === 'impostor' || p.role === 'jester';
+          const roleColor = getRoleColor(p.role);
+
+          const impostorLost = p.role === 'impostor' && room.winner !== 'impostor';
+          const jesterLost = p.role === 'jester' && room.winner !== 'jester';
+          const survivedButLost = impostorLost || jesterLost;
+
+          let statusText = '';
+          let statusColor = '';
+
+          if (p.is_alive) {
+            if (survivedButLost) {
+              statusText = 'Failed';
+              statusColor = '#E5383B';
+            } else {
+              statusText = 'Survived';
+              statusColor = '#2CB67D';
+            }
+          } else {
+            statusColor = '#5A5A7A';
+            if (cause?.type === 'killed') {
+              statusText = `Burned by ${cause.byName}`;
+            } else if (cause?.type === 'ejected') {
+              statusText = 'Voted out';
+            } else if (reportWindowExpired) {
+              statusText = 'Eliminated';
+            } else {
+              statusText = 'Report pending…';
+            }
+          }
 
           return (
-            <View key={p.id} style={styles.playerRow}>
-              <View style={styles.playerRowTop}>
-                <View style={[styles.colorDot, { backgroundColor: getColorHex(p.color) }]} />
-                <Text style={styles.playerName}>{p.display_name}</Text>
-                <Text style={styles.roleLabel}>{getRoleLabel(p.role)}</Text>
+            <View
+              key={p.id}
+              style={[
+                styles.playerCard,
+                index < players.length - 1 && styles.playerCardBorder,
+              ]}
+            >
+              {/* Left: color dot + name */}
+              <View style={styles.playerLeft}>
+                <View
+                  style={[styles.colorDot, { backgroundColor: getColorHex(p.color) }]}
+                />
+                <View style={styles.playerMeta}>
+                  <Text style={styles.playerName}>{p.display_name}</Text>
+                  <Text style={styles.playerStatus} numberOfLines={1}>
+                    <Text style={{ color: statusColor }}>{statusText}</Text>
+                    {'  ·  '}
+                    <Text style={styles.taskCount}>
+                      {isFakeTasks ? 'Fake' : ''} {completedCount}/{p.tasks.length} assignments
+                    </Text>
+                  </Text>
+                </View>
               </View>
 
-               <View style={styles.playerRowBottom}>
-                {(() => {
-                   // Being alive isn't the same as winning. An impostor who was never caught
-                  // but whose team still lost shouldn't read as green "Survived" — and a
-                  // Jester's entire win condition is getting voted out, so a Jester who's
-                  // still alive at game end always lost too, regardless of who else won
-                  const impostorLost = p.role === 'impostor' && room.winner !== 'impostor';
-                  const jesterLost = p.role === 'jester' && room.winner !== 'jester';
-                  const survivedButLost = impostorLost || jesterLost;
-
-                  if (p.is_alive) {
-                    return (
-                      <Text style={survivedButLost ? styles.failedText : styles.aliveText}>
-                        {survivedButLost ? 'Failed' : 'Survived'}
-                      </Text>
-                    );
-                  }
-
-                  return (
-                    <Text style={styles.deadText}>
-                      {cause?.type === 'killed'
-                        ? `Killed by ${cause.byName}`
-                        : cause?.type === 'ejected'
-                          ? 'Voted out'
-                          : reportWindowExpired
-                            ? 'Eliminated'
-                            : 'Final report pending...'}
-                    </Text>
-                  );
-                })()}
-                <Text style={styles.taskText}>
-                  {isFakeTasks ? 'Fake tasks' : 'Tasks'}: {completedCount}/{p.tasks.length}
+              {/* Right: role badge */}
+              <View style={[styles.roleBadge, { borderColor: roleColor }]}>
+                <Text style={[styles.roleBadgeText, { color: roleColor }]}>
+                  {getRoleLabel(p.role)}
                 </Text>
               </View>
             </View>
@@ -314,23 +354,29 @@ await supabase
         })}
       </View>
 
-      {isHost ? (
-        <TouchableOpacity
-          style={[styles.playAgainButton, resetting && styles.playAgainButtonDisabled]}
-          onPress={handlePlayAgain}
-          disabled={resetting}
-        >
-          <Text style={styles.playAgainButtonText}>
-            {resetting ? 'Resetting...' : 'Play Again'}
-          </Text>
-        </TouchableOpacity>
-) : (
-        <Text style={styles.waitingText}>Waiting for host to start a new game...</Text>
-      )}
+      {/* Actions */}
+      <View style={styles.actions}>
+        {isHost ? (
+          <TouchableOpacity
+            style={[styles.primaryButton, resetting && styles.buttonDisabled]}
+            onPress={handlePlayAgain}
+            disabled={resetting}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.primaryButtonText}>
+              {resetting ? 'Resetting…' : 'Play Again'}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.waitingCard}>
+            <Text style={styles.waitingText}>Waiting for host to start a new game…</Text>
+          </View>
+        )}
 
-      <TouchableOpacity onPress={handleLeave} style={styles.leaveButton}>
-        <Text style={styles.leaveText}>Leave</Text>
-      </TouchableOpacity>
+        <TouchableOpacity onPress={handleLeave} activeOpacity={0.6} style={styles.leaveButton}>
+          <Text style={styles.leaveText}>Leave Game</Text>
+        </TouchableOpacity>
+      </View>
     </ScrollView>
   );
 }
@@ -338,113 +384,165 @@ await supabase
 const styles = StyleSheet.create({
   centered: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: '#09091A',
     alignItems: 'center',
     justifyContent: 'center',
   },
+  scroll: {
+    flex: 1,
+    backgroundColor: '#09091A',
+  },
   container: {
     flexGrow: 1,
-    backgroundColor: '#1a1a2e',
-    padding: 24,
+    paddingHorizontal: 20,
+    paddingTop: 56,
+    paddingBottom: 48,
   },
+
+  // Winner banner
   winnerBanner: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#e74c3c',
-    textAlign: 'center',
-    marginBottom: 28,
+    borderWidth: 1,
+    borderRadius: 20,
+    backgroundColor: '#16162A',
+    paddingVertical: 28,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    marginBottom: 36,
   },
-  sectionLabel: {
-    color: '#aaaaaa',
-    fontSize: 12,
+  winnerEyebrow: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    letterSpacing: 3,
+    color: '#5A5A7A',
+    marginBottom: 10,
     textTransform: 'uppercase',
+  },
+  winnerHeadline: {
+    fontFamily: 'BlackHanSans_400Regular',
+    fontSize: 40,
     letterSpacing: 1,
+    textAlign: 'center',
+  },
+
+  // Section label
+  sectionLabel: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    letterSpacing: 3,
+    color: '#5A5A7A',
+    textTransform: 'uppercase',
     marginBottom: 12,
   },
+
+  // Player list
   playerList: {
-    backgroundColor: '#16213e',
-    borderRadius: 12,
-    padding: 8,
+    backgroundColor: '#16162A',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#333',
-    marginBottom: 28,
+    borderColor: '#22223A',
+    marginBottom: 32,
+    overflow: 'hidden',
   },
-  playerRow: {
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#222',
-  },
-  playerRowTop: {
+  playerCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 4,
-  },
-  playerRowBottom: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingLeft: 26,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  playerCardBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#22223A',
+  },
+  playerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    minWidth: 0,
   },
   colorDot: {
     width: 18,
     height: 18,
     borderRadius: 9,
+    flexShrink: 0,
+  },
+  playerMeta: {
+    flex: 1,
+    minWidth: 0,
   },
   playerName: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '600',
-    flex: 1,
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 15,
+    color: '#F0F0FA',
+    marginBottom: 2,
   },
-  roleLabel: {
-    color: '#e74c3c',
-    fontSize: 13,
-    fontWeight: 'bold',
+  playerStatus: {
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 12,
+    color: '#5A5A7A',
   },
-  aliveText: {
-    color: '#2ecc71',
-    fontSize: 13,
+  taskCount: {
+    color: '#3A3A5A',
   },
-  failedText: {
-    color: '#e74c3c',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  deadText: {
-    color: '#888',
-    fontSize: 13,
-  },
-  taskText: {
-    color: '#aaaaaa',
-    fontSize: 13,
-  },
-  playAgainButton: {
-    backgroundColor: '#e74c3c',
-    paddingVertical: 16,
+
+  // Role badge
+  roleBadge: {
+    borderWidth: 1,
     borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    flexShrink: 0,
+  },
+  roleBadgeText: {
+    fontFamily: 'Nunito_700Bold',
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+
+  // Actions
+  actions: {
+    gap: 12,
+  },
+  primaryButton: {
+    backgroundColor: '#F0B429',
+    paddingVertical: 18,
+    borderRadius: 16,
     alignItems: 'center',
-    marginBottom: 16,
   },
-  playAgainButtonDisabled: {
-    opacity: 0.6,
+  buttonDisabled: {
+    opacity: 0.35,
   },
-  playAgainButtonText: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: 'bold',
+  primaryButtonText: {
+    fontFamily: 'Nunito_900Black',
+    fontSize: 17,
+    color: '#09091A',
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+  },
+  waitingCard: {
+    backgroundColor: '#16162A',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#22223A',
+    paddingVertical: 18,
+    alignItems: 'center',
   },
   waitingText: {
-    color: '#aaaaaa',
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 14,
+    color: '#5A5A7A',
     textAlign: 'center',
-    fontSize: 15,
   },
   leaveButton: {
     alignItems: 'center',
-    marginTop: 16,
+    paddingVertical: 8,
   },
   leaveText: {
-    color: '#aaaaaa',
-    fontSize: 16,
+    fontFamily: 'Nunito_600SemiBold',
+    fontSize: 15,
+    color: '#3A3A5A',
   },
 });
