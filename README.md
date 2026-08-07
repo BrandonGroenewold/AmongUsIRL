@@ -1,14 +1,16 @@
-﻿# Trust No One
+# Trust No One
 
-A real-life social deduction party game for 4–10 players. Everyone gets a phone. Someone on your team is secretly working against you. Figure out who before it's too late.
+A real-life social deduction party game for 4–15 players. Everyone gets a phone. Someone on your team is secretly working against you. Figure out who before it's too late.
+
+**▶ [Play now](https://brandongroenewold.github.io/TrustNoOne)** — no download, no account required. Open on any phone.
 
 ---
 
 ## What Is It?
 
-Trust No One is a mobile app that brings social deduction gameplay into the real world. Players physically move around a space completing assignments, while one or more hidden **Moles** try to eliminate Operatives without getting caught. Call a Debrief when you find a body, discuss, vote, and burn the right person — or lose everything.
+Trust No One brings social deduction gameplay into the real world. Players physically move around a space completing assignments, while one or more hidden **Moles** try to eliminate Operatives without getting caught.
 
-Built with **Expo (React Native)** and **Supabase**, designed to run on any phone without an account or download from a store.
+Find a body? Call a Debrief. Discuss. Vote. Burn the right person — or lose everything.
 
 ---
 
@@ -17,8 +19,8 @@ Built with **Expo (React Native)** and **Supabase**, designed to run on any phon
 | Role | Team | Goal |
 |---|---|---|
 | **Operative** | Operatives | Complete all assignments or burn all Moles |
-| **Hacker** | Operatives | Use your Pulse ability to check who is alive or dead |
 | **The Mole** | Moles | Eliminate Operatives until you match or outnumber them |
+| **Hacker** | Operatives | Use your Pulse ability to check who is alive or dead |
 | **Loose Cannon** | Neutral | Get yourself voted out — that's your only win condition |
 
 ---
@@ -30,7 +32,7 @@ Built with **Expo (React Native)** and **Supabase**, designed to run on any phon
 3. Host configures settings — number of Moles, assignments, burn cooldown, debrief timers — and builds the assignment pool with real locations in your space
 4. Game starts, roles are secretly assigned, and everyone gets their assignments
 5. Operatives find locations and complete assignments. Moles fake it and look for opportunities
-6. When a body is found or someone calls an Emergency Debrief, all players gather and a discussion + voting phase begins
+6. When a body is found or someone calls an Emergency Debrief, all players gather for a discussion and voting phase
 7. Most votes burns that player. Ties mean no one goes
 8. Game ends when Operatives finish all assignments, all Moles are burned, Moles outnumber Operatives, or the Loose Cannon gets voted out
 
@@ -38,86 +40,22 @@ Built with **Expo (React Native)** and **Supabase**, designed to run on any phon
 
 ## Features
 
-- 🔴 **Real-time multiplayer** via Supabase Realtime — no polling, instant updates across all devices
+- 🔴 **Real-time multiplayer** — instant updates across all devices, no polling
 - 📋 **Custom assignment pools** — host defines real locations in your space
-- 🎭 **Four roles** — Operative, The Mole, Hacker, Loose Cannon (with more planned)
-- 🩺 **Pulse ability** — Hacker earns time by completing assignments, uses it to check alive/dead status of all players
+- 🎭 **Four roles** — Operative, The Mole, Hacker, Loose Cannon
+- 🩺 **Pulse ability** — Hacker earns time by completing assignments and uses it to check alive/dead status of all players
 - 🗳️ **Full meeting system** — discussion timer, voting timer, early resolution when all votes are in
+- 👁️ **Revealed or anonymous voting** — host chooses whether vote results show who voted for whom
 - 🔒 **Host failover** — if the host disconnects, the next eligible player is automatically promoted
-- 🚫 **Kick & ban system** — host can remove disruptive players by device ID
+- 🚫 **Kick system** — host can remove disruptive players
 - 🔁 **Play Again flow** — full game reset without leaving the room
 - 💾 **Session persistence** — closing and reopening the app resumes your active game
 
 ---
 
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Framework | Expo SDK 56 (React Native) |
-| Navigation | expo-router |
-| Backend & Database | Supabase (Postgres + Realtime) |
-| Language | TypeScript |
-| State | React hooks + Supabase subscriptions |
-
----
-
-## Project Structure
-
-```
-app/
-  index.tsx          — Home screen (name, color, create/join)
-  create-game.tsx    — Creates room and host player row
-  join-game.tsx      — Joins existing room by code
-  lobby.tsx          — Waiting room, settings, player management
-  role-reveal.tsx    — Private role assignment screen
-  game.tsx           — Main gameplay (assignments, Pulse, burn flow)
-  gathering.tsx      — Pre-debrief gathering screen
-  meeting.tsx        — Discussion and voting
-  results.tsx        — Vote result reveal
-  end-game.tsx       — Game over screen with kill summary
-
-components/
-  RoleRevealButton.tsx   — Hold-to-reveal role badge
-  HowToPlayModal.tsx     — In-app rules and roles reference
-  SettingsModal.tsx      — Host game settings editor
-
-hooks/
-  useHeartbeat.ts        — Keeps player last_seen current
-  useHostFailover.ts     — Auto-promotes next host on disconnect
-
-lib/
-  supabase.ts            — Supabase client
-  session.ts             — AsyncStorage session helpers
-```
-
----
-
-## Running Locally
-
-```bash
-git clone https://github.com/BrandonGroenewold/trust-no-one
-cd trust-no-one
-npm install --legacy-peer-deps
-npx expo start
-```
-
-Press `w` to open in browser for testing. For multiplayer testing use separate browser profiles or devices — incognito windows share storage.
-
-You'll need a `.env` file with your Supabase credentials:
-
-```
-EXPO_PUBLIC_SUPABASE_URL=your-project-url
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-```
-
----
-
 ## Roadmap
 
-- [ ] Full Heist theme visual redesign
 - [ ] Sheriff role — can eliminate one player per game
-- [ ] 13-role roadmap across three waves
 - [ ] Haunted House theme expansion
 - [ ] Custom role roster picker (mix and match across packs)
 - [ ] App Store release
@@ -126,7 +64,7 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
 ## Status
 
-Active development. Core gameplay is fully functional. Currently in the theming and redesign phase before any public release.
+Active development. Core gameplay is fully functional and playable via the link above.
 
 ---
 
